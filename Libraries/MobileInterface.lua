@@ -3150,13 +3150,29 @@ do
         }, Page)
     end
 
-    function Page:CreateSection(name)
+    function Page:CreateSection(name, column)
         self.sectionNum = self.sectionNum+1
         local targetColumn
+        
         if self.columns and #self.columns>0 then
-            targetColumn = self.columns[self._columnIndex]
-            self._columnIndex = (self._columnIndex % #self.columns) + 1
+            if column then
+                -- Handle explicit column specification
+                if string.lower(column) == "left" then
+                    targetColumn = self.columns[1] -- LeftColumn
+                elseif string.lower(column) == "right" then
+                    targetColumn = self.columns[2] -- RightColumn
+                else
+                    -- Invalid column specification, fall back to alternating
+                    targetColumn = self.columns[self._columnIndex]
+                    self._columnIndex = (self._columnIndex % #self.columns) + 1
+                end
+            else
+                -- Default alternating behavior
+                targetColumn = self.columns[self._columnIndex]
+                self._columnIndex = (self._columnIndex % #self.columns) + 1
+            end
         end
+        
         return Section.new(self,{
             ["Name"] = name;
             ["Page"] = self.contents;
@@ -6828,3 +6844,4 @@ do
 end
 
 warn("Atlas UI Library v"..VERSION.." by RoadToGlory#9879 has initiated (Modified Version by fallen.starn)")
+return Library
