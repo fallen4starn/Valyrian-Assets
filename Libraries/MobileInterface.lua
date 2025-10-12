@@ -3150,15 +3150,42 @@ do
         }, Page)
     end
 
-    function Page:CreateSection(name)
-        self.sectionNum = self.sectionNum+1
-        local targetColumn
-        if self.columns and #self.columns>0 then
-            targetColumn = self.columns[self._columnIndex]
-            self._columnIndex = (self._columnIndex % #self.columns) + 1
+    function Page:CreateSection(name, column)
+        local sectionName = name
+        local desiredColumn = column
+
+        if typeof(name) == "table" then
+            sectionName = name.Name or "Section"
+            desiredColumn = name.Column or name.Position or name.Side or column
         end
+
+        self.sectionNum = self.sectionNum+1
+
+        local targetColumn
+        local hasColumns = self.columns and #self.columns > 0
+
+        if hasColumns then
+            if desiredColumn then
+                local desired = string.lower(tostring(desiredColumn))
+                for index = 1, #self.columns do
+                    local columnFrame = self.columns[index]
+                    local columnName = string.lower(columnFrame.Name or "")
+
+                    if columnName:find(desired, 1, true) then
+                        targetColumn = columnFrame
+                        break
+                    end
+                end
+            end
+
+            if not targetColumn then
+                targetColumn = self.columns[self._columnIndex]
+                self._columnIndex = (self._columnIndex % #self.columns) + 1
+            end
+        end
+
         return Section.new(self,{
-            ["Name"] = name;
+            ["Name"] = sectionName;
             ["Page"] = self.contents;
             ["ColumnTarget"] = targetColumn;
         })
@@ -6828,5 +6855,3 @@ do
 end
 
 warn("Atlas UI Library v"..VERSION.." by RoadToGlory#9879 has initiated (Modified Version by fallen.starn)")
-
-return Library
