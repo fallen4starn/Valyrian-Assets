@@ -3157,9 +3157,9 @@ do
         if self.columns and #self.columns>0 then
             if column then
                 -- Handle explicit column specification
-                if string.lower(column) == "left" then
+                if column == "Left" then
                     targetColumn = self.columns[1] -- LeftColumn
-                elseif string.lower(column) == "right" then
+                elseif column == "Right" then
                     targetColumn = self.columns[2] -- RightColumn
                 else
                     -- Invalid column specification, fall back to alternating
