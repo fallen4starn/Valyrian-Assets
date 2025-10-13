@@ -22,6 +22,39 @@ local HttpService = game:GetService("HttpService")
 local player = Players.LocalPlayer
 local mouse = player:GetMouse()
 
+local GlobalEnvironment = getgenv and getgenv() or _G
+
+do
+    local identitySetter = setthreadidentity or setidentity or (syn and syn.set_thread_identity)
+    local identityGetter = getthreadidentity or getidentity or (syn and syn.get_thread_identity)
+    local canHook = typeof(hookfunction) == "function"
+
+    if canHook and typeof(identitySetter) == "function" and typeof(identityGetter) == "function" and not GlobalEnvironment.__AtlasIdentityHooked then
+        GlobalEnvironment.__AtlasIdentityHooked = true
+
+        local originalInstanceNew
+        originalInstanceNew = hookfunction(Instance.new, function(className, parent)
+            local previousIdentity = identityGetter()
+            identitySetter(2)
+
+            local success, instanceOrError = pcall(originalInstanceNew, className)
+
+            identitySetter(previousIdentity)
+
+            if not success then
+                error(instanceOrError, 2)
+            end
+
+            local object = instanceOrError
+            if parent ~= nil then
+                object.Parent = parent
+            end
+
+            return object
+        end)
+    end
+end
+
 -- CLASSES
 local Library = {}
 local Page = {}
