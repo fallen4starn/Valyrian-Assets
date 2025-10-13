@@ -341,6 +341,9 @@ do
         if info.Credit==nil then
             info.Credit = "Made with love <3"
         end
+        if info.AutoSave==nil then
+            info.AutoSave = true
+        end
         info.FullName = info.FullName or info.Name
 
         local function makeLoader()
@@ -2033,6 +2036,7 @@ do
         local savedKey = nil
         local flags = {}
         local saveCoroutine
+        local saveConfig
 
         if info.ConfigFolder then
             -- load data
@@ -2054,7 +2058,8 @@ do
                     savedKey = nil
                 end
             end
-            flags = readfile(config)=="" and {} or game:GetService("HttpService"):JSONDecode(readfile(config))
+            local httpService = game:GetService("HttpService")
+            flags = readfile(config)=="" and {} or httpService:JSONDecode(readfile(config))
             for i,v in pairs(flags) do
                 if type(v)=="string" then
                     if string.sub(v,1,9)=="?special|" then
@@ -2077,24 +2082,33 @@ do
                     end
                 end
             end
-            saveCoroutine = coroutine.create(function()
-                LPH_JIT_MAX(function()
-                    while utility:Wait() do
-                        local edited_flags = {}
-                        for i,v in pairs(flags) do
-                            if typeof(v)=="EnumItem" then
-                                v = "?special|<$enum_type$>:"..tostring(v.EnumType)..";<$enum_item$>:"..v.Name
-                            elseif typeof(v)=="Color3" then
-                                v = "?special|<$colorR$>:"..v.R..";<$colorG$>:"..v.G..";<$colorB$>:"..v.B
-                            end
-                            edited_flags[i] = v
-                        end
-                        writefile(config,game:GetService("HttpService"):JSONEncode(edited_flags))
-                        task.wait(0.5)
+            local function getEditedFlags()
+                local edited_flags = {}
+                for i,v in pairs(flags) do
+                    if typeof(v)=="EnumItem" then
+                        v = "?special|<$enum_type$>:"..tostring(v.EnumType)..";<$enum_item$>:"..v.Name
+                    elseif typeof(v)=="Color3" then
+                        v = "?special|<$colorR$>:"..v.R..";<$colorG$>:"..v.G..";<$colorB$>:"..v.B
                     end
-                end)()
-            end)
-            coroutine.resume(saveCoroutine)
+                    edited_flags[i] = v
+                end
+                return edited_flags
+            end
+            local function saveFlagsToFile()
+                writefile(config,httpService:JSONEncode(getEditedFlags()))
+            end
+            if info.AutoSave then
+                saveCoroutine = coroutine.create(function()
+                    LPH_JIT_MAX(function()
+                        while utility:Wait() do
+                            saveFlagsToFile()
+                            task.wait(0.5)
+                        end
+                    end)()
+                end)
+                coroutine.resume(saveCoroutine)
+            end
+            saveConfig = saveFlagsToFile
         end
 
         if info.UseLoader then
@@ -2595,6 +2609,7 @@ do
             ["_drag_events"] = dragEvents;
             ["_page_num"] = 0;
             ["_saveCoroutine"] = saveCoroutine;
+            ["_saveConfig"] = saveConfig;
             ["_usedFlags"] = {};
             ["_closePages"] = closePages;
         }, Library)
@@ -2622,6 +2637,11 @@ do
         end
         self.container.Main.Visible = value
         return value
+    end
+    function Library:Save()
+        if self._saveConfig then
+            self._saveConfig()
+        end
     end
     function Library:CreatePage(name)
         self._page_num = self._page_num+1
@@ -2901,14 +2921,16 @@ do
     end
     function Library:Destroy()
         self.container:Destroy()
-        for _,v in pairs(self._drag_events) do
-            v:Disconnect()
-        end
         for _,v in pairs(self._connections) do
             v:Disconnect()
         end
+        for _,v in pairs(self._drag_events) do
+            v:Disconnect()
+        end
         self._section_update:Disconnect()
-        coroutine.close(self._saveCoroutine)
+        if self._saveCoroutine then
+            coroutine.close(self._saveCoroutine)
+        end
         self = nil
         return nil
     end
