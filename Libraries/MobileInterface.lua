@@ -16,6 +16,7 @@ local Run = game:GetService("RunService")
 local UIS = game:GetService("UserInputService")
 local Core = game:GetService("CoreGui")
 local MP = game:GetService("MarketplaceService")
+local HttpService = game:GetService("HttpService")
 
 -- VARIABLES
 local player = Players.LocalPlayer
@@ -331,7 +332,7 @@ end
 
 -- LIBRARY
 do
-    function Library.new(info)
+    function Library.new(info, autoSave)
         -- Requirements
         utility:Requirement(type(info)=="table","Info must be a table!")
         utility:Requirement(info.Name,"Missing config folder argument")
@@ -341,10 +342,10 @@ do
         if info.Credit==nil then
             info.Credit = "Made with love <3"
         end
-        if info.AutoSave==nil then
-            info.AutoSave = true
-        end
         info.FullName = info.FullName or info.Name
+        if autoSave==nil then
+            autoSave = true
+        end
 
         local function makeLoader()
             -- Generated using RoadToGlory's Converter v1.1 (RoadToGlory#9879)
@@ -2036,17 +2037,19 @@ do
         local savedKey = nil
         local flags = {}
         local saveCoroutine
-        local saveConfig
+        local configPath
+        local encodeFlags
+        local writeConfig
 
         if info.ConfigFolder then
             -- load data
             local cf = info.ConfigFolder
-            local config = cf.."/config.json"
+            configPath = cf.."/config.json"
             if not isfolder(cf) then
                 makefolder(cf)
             end
-            if not isfile(config) then
-                writefile(config,"")
+            if not isfile(configPath) then
+                writefile(configPath,"")
             end
             if info.CheckKey then
                 local key = cf.."/key.txt"
@@ -2058,8 +2061,7 @@ do
                     savedKey = nil
                 end
             end
-            local httpService = game:GetService("HttpService")
-            flags = readfile(config)=="" and {} or httpService:JSONDecode(readfile(config))
+            flags = readfile(configPath)=="" and {} or HttpService:JSONDecode(readfile(configPath))
             for i,v in pairs(flags) do
                 if type(v)=="string" then
                     if string.sub(v,1,9)=="?special|" then
@@ -2082,7 +2084,7 @@ do
                     end
                 end
             end
-            local function getEditedFlags()
+            encodeFlags = function()
                 local edited_flags = {}
                 for i,v in pairs(flags) do
                     if typeof(v)=="EnumItem" then
@@ -2094,21 +2096,31 @@ do
                 end
                 return edited_flags
             end
-            local function saveFlagsToFile()
-                writefile(config,httpService:JSONEncode(getEditedFlags()))
+
+            writeConfig = function()
+                local edited_flags = encodeFlags()
+                local success, encoded = pcall(function()
+                    return HttpService:JSONEncode(edited_flags)
+                end)
+                if not success then
+                    warn("Failed to encode config: "..tostring(encoded))
+                    return false
+                end
+                writefile(configPath, encoded)
+                return true
             end
-            if info.AutoSave then
+
+            if autoSave then
                 saveCoroutine = coroutine.create(function()
                     LPH_JIT_MAX(function()
                         while utility:Wait() do
-                            saveFlagsToFile()
+                            writeConfig()
                             task.wait(0.5)
                         end
                     end)()
                 end)
                 coroutine.resume(saveCoroutine)
             end
-            saveConfig = saveFlagsToFile
         end
 
         if info.UseLoader then
@@ -2609,9 +2621,12 @@ do
             ["_drag_events"] = dragEvents;
             ["_page_num"] = 0;
             ["_saveCoroutine"] = saveCoroutine;
-            ["_saveConfig"] = saveConfig;
             ["_usedFlags"] = {};
             ["_closePages"] = closePages;
+            ["_configPath"] = configPath;
+            ["_encodeFlags"] = encodeFlags;
+            ["_writeConfig"] = writeConfig;
+            ["_autoSaveEnabled"] = saveCoroutine~=nil;
         }, Library)
 
         table.insert(self._connections,UIS.InputBegan:Connect(function(input,gpe)
@@ -2638,10 +2653,11 @@ do
         self.container.Main.Visible = value
         return value
     end
-    function Library:Save()
-        if self._saveConfig then
-            self._saveConfig()
+    function Library:SaveConfig()
+        if not self._writeConfig then
+            return false
         end
+        return self._writeConfig() and true or false
     end
     function Library:CreatePage(name)
         self._page_num = self._page_num+1
@@ -2921,10 +2937,10 @@ do
     end
     function Library:Destroy()
         self.container:Destroy()
-        for _,v in pairs(self._connections) do
+        for _,v in pairs(self._drag_events) do
             v:Disconnect()
         end
-        for _,v in pairs(self._drag_events) do
+        for _,v in pairs(self._connections) do
             v:Disconnect()
         end
         self._section_update:Disconnect()
