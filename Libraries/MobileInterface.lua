@@ -14,6 +14,7 @@ local Players = game:GetService("Players")
 local TS = game:GetService("TweenService")
 local Run = game:GetService("RunService")
 local UIS = game:GetService("UserInputService")
+local GuiService = game:GetService("GuiService")
 local Core = game:GetService("CoreGui")
 local MP = game:GetService("MarketplaceService")
 local HttpService = game:GetService("HttpService")
@@ -106,27 +107,70 @@ do
         end)
     end
 
+    function utility:IsMobile()
+        return GuiService:IsTenFootInterface() or UIS.TouchEnabled and not UIS.MouseEnabled
+    end
+
+    function utility:GetMobileScale()
+        if utility:IsMobile() then
+            local screenSize = workspace.CurrentCamera.ViewportSize
+            local scaleFactor = math.min(screenSize.X, screenSize.Y) / 1080
+            return math.clamp(scaleFactor * 1.2, 1.0, 2.0) -- Increased scale for mobile
+        end
+        return 1.0
+    end
+
+    function utility:OptimizeForMobile(element)
+        if utility:IsMobile() and element then
+            local scale = utility:GetMobileScale()
+            
+            if element:IsA("TextButton") or element:IsA("ImageButton") then
+                local currentSize = element.Size
+                element.Size = UDim2.new(currentSize.X.Scale, currentSize.X.Offset, 
+                                       currentSize.Y.Scale, math.max(currentSize.Y.Offset, 44) * scale)
+            end
+            
+            if element:IsA("TextLabel") or element:IsA("TextBox") or element:IsA("TextButton") then
+                element.TextSize = math.max(element.TextSize * scale, 16)
+            end
+        end
+    end
+
     function utility:HandleGradientButton(element,callback)
         element.Active = true
         local button = element
         local gradient = element:FindFirstChildOfClass("UIGradient")
+        local isPressed = false
 
         button.InputBegan:Connect(function(input)
-            if input.UserInputType==Enum.UserInputType.MouseButton1 then
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
                 gradient.Rotation = 90
+                isPressed = true
+            end
+        end)
+
+        button.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                if isPressed and gradient.Rotation == 90 then
+                    coroutine.wrap(callback)()
+                end
+                gradient.Rotation = -90
+                isPressed = false
             end
         end)
 
         button.MouseLeave:Connect(function()
             gradient.Rotation = -90
+            isPressed = false
         end)
 
         local con = UIS.InputEnded:Connect(function(input)
-            if input.UserInputType==Enum.UserInputType.MouseButton1 then
+            if (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) and isPressed then
                 if gradient.Rotation == 90 then
                     coroutine.wrap(callback)()
                 end
                 gradient.Rotation = -90
+                isPressed = false
             end
         end)
 
@@ -157,7 +201,7 @@ do
         return element:IsA("Frame") and string.lower(element.Name):find("padding")
     end
 
-    function utility:DoClickEffect(element)
+    function utility:DoClickEffect(element, inputPosition)
         local function makeEffect()
             -- Generated using RoadToGlory's Converter v1.1 (RoadToGlory#9879)
             local Converted = {
@@ -199,13 +243,26 @@ do
         local tweenInfo = TweenInfo.new(0.5,Enum.EasingStyle.Linear,Enum.EasingDirection.In,0,false,0)
 
         local realAbsPosition = Vector2.new(element.AbsolutePosition.X-(element.AbsoluteSize.X*element.AnchorPoint.X),element.AbsolutePosition.Y-(element.AbsoluteSize.Y*element.AnchorPoint.Y))
-        local relative = Vector2.new(mouse.X,mouse.Y)-realAbsPosition
+        
+        -- Support both mouse and touch input positions
+        local clickPosition
+        if inputPosition then
+            -- Use provided touch input position
+            clickPosition = inputPosition
+        else
+            -- Default to mouse position
+            clickPosition = Vector2.new(mouse.X,mouse.Y)
+        end
+        
+        local relative = clickPosition - realAbsPosition
 
         effect.ImageLabel.Position = UDim2.new(0,relative.X,0.5,0)
         effect.ImageLabel.ImageRectOffset = Vector2.new(0,-relative.Y)
 
+        -- Scale effect size for mobile devices
+        local effectSize = utility:IsMobile() and 450 or 375
         local tween = TS:Create(effect.ImageLabel,tweenInfo,{
-            ["Size"] = UDim2.new(0,375,1,0);
+            ["Size"] = UDim2.new(0,effectSize,1,0);
             ["ImageTransparency"] = 1;
         })
 
@@ -262,6 +319,19 @@ do
         Converted["_Button"].Size = UDim2.new(1, 0, 1, 0)
         Converted["_Button"].Name = "Button"
         Converted["_Button"].Parent = obj -- modified
+        
+        -- Enable touch input and optimize for mobile
+        Converted["_Button"].Active = true
+        Converted["_Button"].AutoButtonColor = false
+        
+        -- Improve mobile button responsiveness
+        if utility:IsMobile() then
+            Converted["_Button"].SelectionImageObject = nil
+            Converted["_Button"].Modal = false
+        end
+
+        -- Apply mobile optimizations
+        utility:OptimizeForMobile(Converted["_Button"])
 
         return Converted["_Button"]
     end
@@ -325,7 +395,9 @@ do
         -- dragging
         local _dragging = false
         local _dragging_offset
+        local _currentInputPosition = Vector2.new()
 
+        -- Mouse dragging
         local inputBegan = button.MouseButton1Down:Connect(function()
             _dragging = true
             _dragging_offset = Vector2.new(mouse.X,mouse.Y)-frame.AbsolutePosition
@@ -336,20 +408,43 @@ do
             _dragging_offset = nil
         end)
 
+        -- Touch dragging support
+        local touchInputBegan = button.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.Touch then
+                _dragging = true
+                _currentInputPosition = input.Position
+                _dragging_offset = input.Position - frame.AbsolutePosition
+            end
+        end)
+
+        local touchInputEnded = button.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.Touch then
+                _dragging = false
+                _dragging_offset = nil
+            end
+        end)
+
+        local touchInputChanged = button.InputChanged:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.Touch then
+                _currentInputPosition = input.Position
+            end
+        end)
+
         local updateEvent
         LPH_JIT_MAX(function()
             updateEvent = Run.RenderStepped:Connect(function()
-                if frame.Visible == false or not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+                if frame.Visible == false or (not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) and not UIS.TouchEnabled) then
                     _dragging = false
                     _dragging_offset = nil
                 end
                 if _dragging and _dragging_offset then
-                    frame.Position = UDim2.fromOffset(mouse.X-_dragging_offset.X+(frame.AbsoluteSize.X*frame.AnchorPoint.X),mouse.Y-_dragging_offset.Y+36+(frame.AbsoluteSize.Y*frame.AnchorPoint.Y))
+                    local currentPos = utility:IsMobile() and _currentInputPosition or Vector2.new(mouse.X, mouse.Y)
+                    frame.Position = UDim2.fromOffset(currentPos.X-_dragging_offset.X+(frame.AbsoluteSize.X*frame.AnchorPoint.X),currentPos.Y-_dragging_offset.Y+36+(frame.AbsoluteSize.Y*frame.AnchorPoint.Y))
                 end
             end)
         end)()
 
-        return {inputBegan,inputEnded,updateEvent}
+        return {inputBegan,inputEnded,updateEvent,touchInputBegan,touchInputEnded,touchInputChanged}
     end
 
     function utility:HandleButton(button,callback)
