@@ -7010,5 +7010,5 @@ do
 end
 
 warn("Atlas UI Library v"..VERSION.." by RoadToGlory#9879 has initiated (Modified Version by fallen.starn)")
-print("fixed mobile support xv034
+print("fixed mobile support xv034")
 return Library
