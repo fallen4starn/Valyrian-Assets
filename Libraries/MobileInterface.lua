@@ -141,35 +141,49 @@ do
         local button = element
         local gradient = element:FindFirstChildOfClass("UIGradient")
         local isPressed = false
+        local callbackExecuted = false
 
+        -- Handle both mouse and touch input
         button.InputBegan:Connect(function(input)
             if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-                gradient.Rotation = 90
+                if gradient then
+                    gradient.Rotation = 90
+                end
                 isPressed = true
+                callbackExecuted = false
             end
         end)
 
         button.InputEnded:Connect(function(input)
             if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-                if isPressed and gradient.Rotation == 90 then
+                if isPressed and not callbackExecuted then
+                    callbackExecuted = true
                     coroutine.wrap(callback)()
                 end
-                gradient.Rotation = -90
+                if gradient then
+                    gradient.Rotation = -90
+                end
                 isPressed = false
             end
         end)
 
+        -- Keep mouse leave for desktop compatibility
         button.MouseLeave:Connect(function()
-            gradient.Rotation = -90
+            if gradient then
+                gradient.Rotation = -90
+            end
             isPressed = false
+            callbackExecuted = false
         end)
 
+        -- Global input handler as fallback (simplified to avoid double execution)
         local con = UIS.InputEnded:Connect(function(input)
-            if (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) and isPressed then
-                if gradient.Rotation == 90 then
-                    coroutine.wrap(callback)()
+            if (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) and isPressed and not callbackExecuted then
+                callbackExecuted = true
+                coroutine.wrap(callback)()
+                if gradient then
+                    gradient.Rotation = -90
                 end
-                gradient.Rotation = -90
                 isPressed = false
             end
         end)
@@ -5426,7 +5440,7 @@ do
             Converted["_Loading1"].Parent = Converted["_Loading"]
 
             Converted["_Theme2"].Value = "ImageColor3"
-            Converted["_Theme2"].Name = "Theme"
+            Converted["_Theme2"].Name = "Theme" 
             Converted["_Theme2"].Parent = Converted["_Loading1"]
 
             Converted["_Category2"].Value = "SymbolSelect"
@@ -7010,5 +7024,5 @@ do
 end
 
 warn("Atlas UI Library v"..VERSION.." by RoadToGlory#9879 has initiated (Modified Version by fallen.starn)")
-print("fixed mobile support xv034")
+print("2nd fix x0123
 return Library
