@@ -7024,5 +7024,5 @@ do
 end
 
 warn("Atlas UI Library v"..VERSION.." by RoadToGlory#9879 has initiated (Modified Version by fallen.starn)")
-print("2nd fix x0123
+print("2nd fix x0123")
 return Library
