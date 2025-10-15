@@ -1,7028 +1,3998 @@
-local VERSION = "1.3"
+--[[
 
-if not LPH_OBFUSCATED then
-    local function r(...)
-        return ...
-    end
-    LPH_JIT_MAX = r
-    LPH_NO_VIRTUALIZE = r
-    LPH_JIT = r
+	Rayfield Interface Suite
+	by Sirius
+
+	shlex  | Designing + Programming
+	iRay   | Programming
+	Max    | Programming
+	Damian | Programming
+
+]]
+
+if debugX then
+	warn('Initialising Rayfield')
 end
 
--- SERVICES
-local Players = game:GetService("Players")
-local TS = game:GetService("TweenService")
-local Run = game:GetService("RunService")
-local UIS = game:GetService("UserInputService")
-local GuiService = game:GetService("GuiService")
-local Core = game:GetService("CoreGui")
-local MP = game:GetService("MarketplaceService")
-local HttpService = game:GetService("HttpService")
-
--- VARIABLES
-local player = Players.LocalPlayer
-local mouse = player:GetMouse()
-
-local GlobalEnvironment = getgenv and getgenv() or _G
-
-do
-    local identitySetter = setthreadidentity or setidentity or (syn and syn.set_thread_identity)
-    local identityGetter = getthreadidentity or getidentity or (syn and syn.get_thread_identity)
-    local canHook = typeof(hookfunction) == "function"
-
-    if canHook and typeof(identitySetter) == "function" and typeof(identityGetter) == "function" and not GlobalEnvironment.__AtlasIdentityHooked then
-        GlobalEnvironment.__AtlasIdentityHooked = true
-
-        local originalInstanceNew
-        originalInstanceNew = hookfunction(Instance.new, function(className, parent)
-            local previousIdentity = identityGetter()
-            identitySetter(2)
-
-            local success, instanceOrError = pcall(originalInstanceNew, className)
-
-            identitySetter(previousIdentity)
-
-            if not success then
-                error(instanceOrError, 2)
-            end
-
-            local object = instanceOrError
-            if parent ~= nil then
-                object.Parent = parent
-            end
-
-            return object
-        end)
-    end
+local function getService(name)
+	local service = game:GetService(name)
+	return if cloneref then cloneref(service) else service
 end
 
--- CLASSES
-local Library = {}
-local Page = {}
-local Section = {}
-local Element = {}
+-- Loads and executes a function hosted on a remote URL. Cancels the request if the requested URL takes too long to respond.
+-- Errors with the function are caught and logged to the output
+local function loadWithTimeout(url: string, timeout: number?): ...any
+	assert(type(url) == "string", "Expected string, got " .. type(url))
+	timeout = timeout or 5
+	local requestCompleted = false
+	local success, result = false, nil
 
-Library.__index = Library
-Page.__index = Page
-Section.__index = Section
-Element.__index = Element
+	local requestThread = task.spawn(function()
+		local fetchSuccess, fetchResult = pcall(game.HttpGet, game, url) -- game:HttpGet(url)
+		-- If the request fails the content can be empty, even if fetchSuccess is true
+		if not fetchSuccess or #fetchResult == 0 then
+			if #fetchResult == 0 then
+				fetchResult = "Empty response" -- Set the error message
+			end
+			success, result = false, fetchResult
+			requestCompleted = true
+			return
+		end
+		local content = fetchResult -- Fetched content
+		local execSuccess, execResult = pcall(function()
+			return loadstring(content)()
+		end)
+		success, result = execSuccess, execResult
+		requestCompleted = true
+	end)
 
--- CONSTANTS
-local GameName = game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId).Name
+	local timeoutThread = task.delay(timeout, function()
+		if not requestCompleted then
+			warn(`Request for {url} timed out after {timeout} seconds`)
+			task.cancel(requestThread)
+			result = "Request timed out"
+			requestCompleted = true
+		end
+	end)
 
--- ICONS
-Library.Icons = {
-    ["Warning"] = 11110093949;
-    ["Info"] = 11109991278;
-    ["Error"] = 11109992284
+	-- Wait for completion or timeout
+	while not requestCompleted do
+		task.wait()
+	end
+	-- Cancel timeout thread if still running when request completes
+	if coroutine.status(timeoutThread) ~= "dead" then
+		task.cancel(timeoutThread)
+	end
+	if not success then
+		warn(`Failed to process {url}: {result}`)
+	end
+	return if success then result else nil
+end
+
+local requestsDisabled = true --getgenv and getgenv().DISABLE_RAYFIELD_REQUESTS
+local InterfaceBuild = '3K3W'
+local Release = "Build 1.68"
+local RayfieldFolder = "Rayfield"
+local ConfigurationFolder = RayfieldFolder.."/Configurations"
+local ConfigurationExtension = ".rfld"
+local settingsTable = {
+	General = {
+		-- if needs be in order just make getSetting(name)
+		rayfieldOpen = {Type = 'bind', Value = 'K', Name = 'Rayfield Keybind'},
+		-- buildwarnings
+		-- rayfieldprompts
+
+	},
+	System = {
+		usageAnalytics = {Type = 'toggle', Value = true, Name = 'Anonymised Analytics'},
+	}
 }
 
-local old_warn = warn
-local warn = function(...)
-    old_warn("[ATLAS]",...)
+-- Settings that have been overridden by the developer. These will not be saved to the user's configuration file
+-- Overridden settings always take precedence over settings in the configuration file, and are cleared if the user changes the setting in the UI
+local overriddenSettings: { [string]: any } = {} -- For example, overriddenSettings["System.rayfieldOpen"] = "J"
+local function overrideSetting(category: string, name: string, value: any)
+	overriddenSettings[`{category}.{name}`] = value
 end
 
--- UTILITY
-local utility = {}
-
-do
-    function utility.BlankFunction()
-    end
-
-    function utility:Lerp(start,goal,alpha)
-        return start+(goal-start)*alpha
-    end
-
-    function utility:Warn(...)
-        warn("ARTEMIS:", ...)
-    end
-
-    function utility:Wait()
-        return Run.RenderStepped:Wait()
-    end
-
-    function utility:Disconnect(connection)
-        pcall(function()
-            connection:Disconnect()
-        end)
-    end
-
-    function utility:IsMobile()
-        return GuiService:IsTenFootInterface() or UIS.TouchEnabled and not UIS.MouseEnabled
-    end
-
-    function utility:GetMobileScale()
-        if utility:IsMobile() then
-            local screenSize = workspace.CurrentCamera.ViewportSize
-            local scaleFactor = math.min(screenSize.X, screenSize.Y) / 1080
-            return math.clamp(scaleFactor * 1.2, 1.0, 2.0) -- Increased scale for mobile
-        end
-        return 1.0
-    end
-
-    function utility:OptimizeForMobile(element)
-        if utility:IsMobile() and element then
-            local scale = utility:GetMobileScale()
-            
-            if element:IsA("TextButton") or element:IsA("ImageButton") then
-                local currentSize = element.Size
-                element.Size = UDim2.new(currentSize.X.Scale, currentSize.X.Offset, 
-                                       currentSize.Y.Scale, math.max(currentSize.Y.Offset, 44) * scale)
-            end
-            
-            if element:IsA("TextLabel") or element:IsA("TextBox") or element:IsA("TextButton") then
-                element.TextSize = math.max(element.TextSize * scale, 16)
-            end
-        end
-    end
-
-    function utility:HandleGradientButton(element,callback)
-        element.Active = true
-        local button = element
-        local gradient = element:FindFirstChildOfClass("UIGradient")
-        local isPressed = false
-        local callbackExecuted = false
-
-        -- Handle both mouse and touch input
-        button.InputBegan:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-                if gradient then
-                    gradient.Rotation = 90
-                end
-                isPressed = true
-                callbackExecuted = false
-            end
-        end)
-
-        button.InputEnded:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-                if isPressed and not callbackExecuted then
-                    callbackExecuted = true
-                    coroutine.wrap(callback)()
-                end
-                if gradient then
-                    gradient.Rotation = -90
-                end
-                isPressed = false
-            end
-        end)
-
-        -- Keep mouse leave for desktop compatibility
-        button.MouseLeave:Connect(function()
-            if gradient then
-                gradient.Rotation = -90
-            end
-            isPressed = false
-            callbackExecuted = false
-        end)
-
-        -- Global input handler as fallback (simplified to avoid double execution)
-        local con = UIS.InputEnded:Connect(function(input)
-            if (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) and isPressed and not callbackExecuted then
-                callbackExecuted = true
-                coroutine.wrap(callback)()
-                if gradient then
-                    gradient.Rotation = -90
-                end
-                isPressed = false
-            end
-        end)
-
-        return con -- for proper destroying and to prevent memory leaks
-    end
-
-    function utility:FormatNumber(number,decimalPlaces)
-        if not typeof(number)=="number" then
-            error("Arg 1 must be a number")
-        end
-        decimalPlaces = math.clamp(decimalPlaces,0,math.huge)
-        local exp = 10^decimalPlaces
-        number = math.round(number*exp)/exp
-        local formatted = number
-        LPH_JIT_MAX(function()
-            while true do
-                local k
-                formatted, k = string.gsub(formatted, "^(-?%d+)(%d%d%d)", '%1,%2')
-                if (k==0) then
-                    break
-                end
-            end
-        end)()
-        return formatted
-    end
-
-    function utility:IsPadding(element)
-        return element:IsA("Frame") and string.lower(element.Name):find("padding")
-    end
-
-    function utility:DoClickEffect(element, inputPosition)
-        local function makeEffect()
-            -- Generated using RoadToGlory's Converter v1.1 (RoadToGlory#9879)
-            local Converted = {
-                ["__buttonEffect"] = Instance.new("Frame");
-                ["_ImageLabel"] = Instance.new("ImageLabel");
-            }
-
-            --Properties
-
-            Converted["__buttonEffect"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["__buttonEffect"].BackgroundTransparency = 1
-            Converted["__buttonEffect"].ClipsDescendants = true
-            Converted["__buttonEffect"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["__buttonEffect"].ZIndex = 0
-            Converted["__buttonEffect"].Name = "_buttonEffect"
-
-            Converted["_ImageLabel"].Image = "http://www.roblox.com/asset/?id=10261338527"
-            Converted["_ImageLabel"].ImageRectSize = Vector2.new(200, 200)
-            Converted["_ImageLabel"].ImageTransparency = 0.8999999761581421
-            Converted["_ImageLabel"].ScaleType = Enum.ScaleType.Crop
-            Converted["_ImageLabel"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_ImageLabel"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_ImageLabel"].BackgroundTransparency = 1
-            Converted["_ImageLabel"].Position = UDim2.new(0, 0, 0, 0)
-            Converted["_ImageLabel"].Size = UDim2.new(0, 0, 1, 0)
-            Converted["_ImageLabel"].Parent = Converted["__buttonEffect"]
-
-            return Converted["__buttonEffect"]
-        end
-
-        local effect = makeEffect()
-        effect.Parent = element
-
-        local corner = element:FindFirstChildOfClass("UICorner")
-        if corner then
-            corner:Clone().Parent = effect
-        end
-
-        local tweenInfo = TweenInfo.new(0.5,Enum.EasingStyle.Linear,Enum.EasingDirection.In,0,false,0)
-
-        local realAbsPosition = Vector2.new(element.AbsolutePosition.X-(element.AbsoluteSize.X*element.AnchorPoint.X),element.AbsolutePosition.Y-(element.AbsoluteSize.Y*element.AnchorPoint.Y))
-        
-        -- Support both mouse and touch input positions
-        local clickPosition
-        if inputPosition then
-            -- Use provided touch input position
-            clickPosition = inputPosition
-        else
-            -- Default to mouse position
-            clickPosition = Vector2.new(mouse.X,mouse.Y)
-        end
-        
-        local relative = clickPosition - realAbsPosition
-
-        effect.ImageLabel.Position = UDim2.new(0,relative.X,0.5,0)
-        effect.ImageLabel.ImageRectOffset = Vector2.new(0,-relative.Y)
-
-        -- Scale effect size for mobile devices
-        local effectSize = utility:IsMobile() and 450 or 375
-        local tween = TS:Create(effect.ImageLabel,tweenInfo,{
-            ["Size"] = UDim2.new(0,effectSize,1,0);
-            ["ImageTransparency"] = 1;
-        })
-
-        tween:Play()
-
-        tween.Completed:Connect(function()
-            effect:Destroy()
-        end)
-
-        return tween
-    end
-
-    function utility:GetColor(percentage, ColorKeyPoints)
-        if (percentage < 0) or (percentage>1) then
-            utility:Warn('getColor got out of bounds percentage (less than 0 or greater than 1')
-        end
-        
-        local closestToLeft = ColorKeyPoints[1]
-        local closestToRight = ColorKeyPoints[#ColorKeyPoints]
-        local LocalPercentage = .5
-        local color = closestToLeft.Value
-        
-        -- This loop can probably be improved by doing something like a Binary search instead
-        -- This should work fine though
-        for i=1,#ColorKeyPoints-1 do
-            if (ColorKeyPoints[i].Time <= percentage) and (ColorKeyPoints[i+1].Time >= percentage) then
-                closestToLeft = ColorKeyPoints[i]
-                closestToRight = ColorKeyPoints[i+1]
-                LocalPercentage = (percentage-closestToLeft.Time)/(closestToRight.Time-closestToLeft.Time)
-                color = closestToLeft.Value:lerp(closestToRight.Value,LocalPercentage)
-                return color
-            end
-        end
-        utility:Warn('Color not found!')
-        return color
-    end
-
-    function utility:CreateButtonObject(obj)
-        -- Generated using RoadToGlory's Converter v1.1 (RoadToGlory#9879)
-        local Converted = {
-            ["_Button"] = Instance.new("TextButton");
-        }
-
-        --Properties
-
-        Converted["_Button"].Font = Enum.Font.SourceSans
-        Converted["_Button"].Text = ""
-        Converted["_Button"].TextColor3 = Color3.fromRGB(0, 0, 0)
-        Converted["_Button"].TextSize = 14
-        Converted["_Button"].AnchorPoint = Vector2.new(0.5, 0.5)
-        Converted["_Button"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-        Converted["_Button"].BackgroundTransparency = 1
-        Converted["_Button"].Position = UDim2.new(0.5, 0, 0.5, 0)
-        Converted["_Button"].Size = UDim2.new(1, 0, 1, 0)
-        Converted["_Button"].Name = "Button"
-        Converted["_Button"].Parent = obj -- modified
-        
-        -- Enable touch input and optimize for mobile
-        Converted["_Button"].Active = true
-        Converted["_Button"].AutoButtonColor = false
-        
-        -- Improve mobile button responsiveness
-        if utility:IsMobile() then
-            Converted["_Button"].SelectionImageObject = nil
-            Converted["_Button"].Modal = false
-        end
-
-        -- Apply mobile optimizations
-        utility:OptimizeForMobile(Converted["_Button"])
-
-        return Converted["_Button"]
-    end
-
-    function utility:CreateHint()
-        -- Generated using RoadToGlory's Converter v1.1 (RoadToGlory#9879)
-        local Converted = {
-            ["_Hint"] = Instance.new("StringValue");
-        }
-
-        --Properties
-
-        Converted["_Hint"].Value = "Hint"
-        Converted["_Hint"].Name = "Hint"
-
-        return Converted["_Hint"]
-    end
-
-    function utility:GetPlayerThumbnail(UserId)
-        return "rbxthumb://type=AvatarHeadShot&id="..UserId.."&w=420&h=420"
-    end
-
-    function utility:GetGameThumbnail(placeId) -- use in studio
-        local thumbnailId = MP:GetProductInfo(placeId).IconImageAssetId
-        return "rbxassetid://"..thumbnailId
-    end
-
-    function utility:SetModal(obj)
-        local m = Instance.new("TextButton")
-        m.Text = ""
-        m.BackgroundTransparency = 1
-        m.Modal = true
-        m.TextTransparency = 1
-        m.Size = UDim2.fromOffset(1,1)
-        m.ZIndex = -25
-        m.Visible = true
-        m.Active = true
-        m.AutoButtonColor = false
-        m.Name = "__modal"
-        m.Parent = obj
-        return obj
-    end
-
-    function utility:Tween(object,properties,duration,...)
-        assert(object and properties and duration,"Missing arguments for utility::Tween")
-        local tween = TS:Create(object,TweenInfo.new(duration,...),properties)
-        tween:Play()
-        return tween
-    end
-
-    function utility:GetTextContrast(color)
-        local r,g,b = color.R*255,color.G*255,color.B*255
-        return (((r * 0.299) + (g * 0.587) + (b * 0.114)) > 150) and Color3.new(0,0,0) or Color3.new(1,1,1)
-    end
-
-    function utility:InitDragging(frame,button)
-        button = button or frame
-
-        assert(button and frame,"Need a frame in order to start dragging")
-
-        -- dragging
-        local _dragging = false
-        local _dragging_offset
-        local _currentInputPosition = Vector2.new()
-
-        -- Mouse dragging
-        local inputBegan = button.MouseButton1Down:Connect(function()
-            _dragging = true
-            _dragging_offset = Vector2.new(mouse.X,mouse.Y)-frame.AbsolutePosition
-        end)
-
-        local inputEnded = mouse.Button1Up:Connect(function()
-            _dragging = false
-            _dragging_offset = nil
-        end)
-
-        -- Touch dragging support
-        local touchInputBegan = button.InputBegan:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.Touch then
-                _dragging = true
-                _currentInputPosition = input.Position
-                _dragging_offset = input.Position - frame.AbsolutePosition
-            end
-        end)
-
-        local touchInputEnded = button.InputEnded:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.Touch then
-                _dragging = false
-                _dragging_offset = nil
-            end
-        end)
-
-        local touchInputChanged = button.InputChanged:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.Touch then
-                _currentInputPosition = input.Position
-            end
-        end)
-
-        local updateEvent
-        LPH_JIT_MAX(function()
-            updateEvent = Run.RenderStepped:Connect(function()
-                if frame.Visible == false or (not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) and not UIS.TouchEnabled) then
-                    _dragging = false
-                    _dragging_offset = nil
-                end
-                if _dragging and _dragging_offset then
-                    local currentPos = utility:IsMobile() and _currentInputPosition or Vector2.new(mouse.X, mouse.Y)
-                    frame.Position = UDim2.fromOffset(currentPos.X-_dragging_offset.X+(frame.AbsoluteSize.X*frame.AnchorPoint.X),currentPos.Y-_dragging_offset.Y+36+(frame.AbsoluteSize.Y*frame.AnchorPoint.Y))
-                end
-            end)
-        end)()
-
-        return {inputBegan,inputEnded,updateEvent,touchInputBegan,touchInputEnded,touchInputChanged}
-    end
-
-    function utility:HandleButton(button,callback)
-        
-    end
-
-    function utility:Requirement(arg,errorResponse)
-        if not arg then
-            error(errorResponse)
-        end
-    end
+local function getSetting(category: string, name: string): any
+	if overriddenSettings[`{category}.{name}`] ~= nil then
+		return overriddenSettings[`{category}.{name}`]
+	elseif settingsTable[category][name] ~= nil then
+		return settingsTable[category][name].Value
+	end
 end
 
--- LIBRARY
-do
-    function Library.new(info, autoSave)
-        -- Requirements
-        utility:Requirement(type(info)=="table","Info must be a table!")
-        utility:Requirement(info.Name,"Missing config folder argument")
-        if info.Color==nil then
-            info.Color = Color3.fromRGB(164, 53, 90)
-        end
-        if info.Credit==nil then
-            info.Credit = "Made with love <3"
-        end
-        info.FullName = info.FullName or info.Name
-        if autoSave==nil then
-            autoSave = true
-        end
-
-        local function makeLoader()
-            -- Generated using RoadToGlory's Converter v1.1 (RoadToGlory#9879)
-            local Converted = {
-                ["_Loader"] = Instance.new("Frame");
-                ["_UICorner"] = Instance.new("UICorner");
-                ["_Theme"] = Instance.new("StringValue");
-                ["_Category"] = Instance.new("StringValue");
-                ["_Ignore"] = Instance.new("BoolValue");
-                ["_GameThumbnail"] = Instance.new("ImageLabel");
-                ["_UICorner1"] = Instance.new("UICorner");
-                ["_UIGradient"] = Instance.new("UIGradient");
-                ["_Main"] = Instance.new("Frame");
-                ["_No"] = Instance.new("Frame");
-                ["_UICorner2"] = Instance.new("UICorner");
-                ["_UIStroke"] = Instance.new("UIStroke");
-                ["_UIGradient1"] = Instance.new("UIGradient");
-                ["_TextLabel"] = Instance.new("TextLabel");
-                ["_Yes"] = Instance.new("Frame");
-                ["_UICorner3"] = Instance.new("UICorner");
-                ["_UIStroke1"] = Instance.new("UIStroke");
-                ["_TextLabel1"] = Instance.new("TextLabel");
-                ["_UIGradient2"] = Instance.new("UIGradient");
-                ["_GameName"] = Instance.new("TextLabel");
-                ["_Theme1"] = Instance.new("StringValue");
-                ["_Category1"] = Instance.new("StringValue");
-                ["_Ignore1"] = Instance.new("BoolValue");
-                ["_Message"] = Instance.new("TextLabel");
-                ["_Theme2"] = Instance.new("StringValue");
-                ["_Category2"] = Instance.new("StringValue");
-                ["_Ignore2"] = Instance.new("BoolValue");
-                ["_Title"] = Instance.new("TextLabel");
-                ["_Theme3"] = Instance.new("StringValue");
-                ["_Category3"] = Instance.new("StringValue");
-                ["_Ignore3"] = Instance.new("BoolValue");
-                ["_ImageLabel"] = Instance.new("ImageLabel");
-                ["_Shadow"] = Instance.new("Frame");
-                ["_ImageLabel1"] = Instance.new("ImageLabel");
-                ["_Theme4"] = Instance.new("StringValue");
-                ["_Category4"] = Instance.new("StringValue");
-                ["_Ignore4"] = Instance.new("BoolValue");
-                ["_Key"] = Instance.new("Frame");
-                ["_Input"] = Instance.new("Frame");
-                ["_UICorner4"] = Instance.new("UICorner");
-                ["_UIStroke2"] = Instance.new("UIStroke");
-                ["_TextBox"] = Instance.new("TextBox");
-                ["_ImageLabel2"] = Instance.new("ImageLabel");
-                ["_Message1"] = Instance.new("TextLabel");
-                ["_Theme5"] = Instance.new("StringValue");
-                ["_Category5"] = Instance.new("StringValue");
-                ["_Ignore5"] = Instance.new("BoolValue");
-                ["_Title1"] = Instance.new("TextLabel");
-                ["_Theme6"] = Instance.new("StringValue");
-                ["_Category6"] = Instance.new("StringValue");
-                ["_Ignore6"] = Instance.new("BoolValue");
-                ["_Directions"] = Instance.new("TextLabel");
-                ["_Theme7"] = Instance.new("StringValue");
-                ["_Category7"] = Instance.new("StringValue");
-                ["_Ignore7"] = Instance.new("BoolValue");
-                ["_Interact"] = Instance.new("Frame");
-                ["_Button"] = Instance.new("Frame");
-                ["_UICorner5"] = Instance.new("UICorner");
-                ["_UIStroke3"] = Instance.new("UIStroke");
-                ["_UIGradient3"] = Instance.new("UIGradient");
-                ["_TextLabel2"] = Instance.new("TextLabel");
-                ["_UISizeConstraint"] = Instance.new("UISizeConstraint");
-                ["_UIListLayout"] = Instance.new("UIListLayout");
-                ["_0_padding"] = Instance.new("Frame");
-                ["_padding"] = Instance.new("Frame");
-                ["_ImageLabel3"] = Instance.new("ImageLabel");
-                ["_Profile"] = Instance.new("Frame");
-                ["_Title2"] = Instance.new("TextLabel");
-                ["_Theme8"] = Instance.new("StringValue");
-                ["_Category8"] = Instance.new("StringValue");
-                ["_Ignore8"] = Instance.new("BoolValue");
-                ["_Player"] = Instance.new("Frame");
-                ["_Gradient"] = Instance.new("Frame");
-                ["_UICorner6"] = Instance.new("UICorner");
-                ["_UIGradient4"] = Instance.new("UIGradient");
-                ["_UIStroke4"] = Instance.new("UIStroke");
-                ["_UICorner7"] = Instance.new("UICorner");
-                ["_Thumbnail"] = Instance.new("ImageLabel");
-                ["_UICorner8"] = Instance.new("UICorner");
-                ["_PlayerName"] = Instance.new("Frame");
-                ["_TextLabel3"] = Instance.new("TextLabel");
-                ["_UIListLayout1"] = Instance.new("UIListLayout");
-                ["_ImageLabel4"] = Instance.new("ImageLabel");
-                ["_Rank"] = Instance.new("Frame");
-                ["_TextLabel4"] = Instance.new("TextLabel");
-                ["_UIListLayout2"] = Instance.new("UIListLayout");
-                ["_Close"] = Instance.new("ImageLabel");
-                ["_Theme9"] = Instance.new("StringValue");
-                ["_Category9"] = Instance.new("StringValue");
-                ["_Ignore9"] = Instance.new("BoolValue");
-            }
-
-            --Properties
-
-            Converted["_Loader"].AnchorPoint = Vector2.new(1, 1)
-            Converted["_Loader"].BackgroundColor3 = Color3.fromRGB(28.000000230968, 28.000000230968, 28.000000230968)
-            Converted["_Loader"].Position = UDim2.new(1, -20, 1, -20)
-            Converted["_Loader"].Size = UDim2.new(0, 280, 0, 127)
-            Converted["_Loader"].Name = "Loader"
-            Converted["_Loader"].Parent = game:GetService("CoreGui")
-
-            Converted["_UICorner"].CornerRadius = UDim.new(0, 6)
-            Converted["_UICorner"].Parent = Converted["_Loader"]
-
-            Converted["_Theme"].Value = "BackgroundColor3"
-            Converted["_Theme"].Name = "Theme"
-            Converted["_Theme"].Parent = Converted["_Loader"]
-
-            Converted["_Category"].Value = "Notification"
-            Converted["_Category"].Name = "Category"
-            Converted["_Category"].Parent = Converted["_Theme"]
-
-            Converted["_Ignore"].Name = "Ignore"
-            Converted["_Ignore"].Parent = Converted["_Theme"]
-
-            Converted["_GameThumbnail"].Image = "https://www.roblox.com/asset-thumbnail/image?assetId=5670218884&width=768&height=432&format=png"
-            Converted["_GameThumbnail"].ImageTransparency = 0.8
-            Converted["_GameThumbnail"].ScaleType = Enum.ScaleType.Crop
-            Converted["_GameThumbnail"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_GameThumbnail"].BackgroundTransparency = 1
-            Converted["_GameThumbnail"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_GameThumbnail"].Name = "GameThumbnail"
-            Converted["_GameThumbnail"].Parent = Converted["_Loader"]
-
-            Converted["_UICorner1"].CornerRadius = UDim.new(0, 6)
-            Converted["_UICorner1"].Parent = Converted["_GameThumbnail"]
-
-            Converted["_UIGradient"].Transparency = NumberSequence.new{
-                NumberSequenceKeypoint.new(0, 0),
-                NumberSequenceKeypoint.new(1, 0.543749988079071)
-            }
-            Converted["_UIGradient"].Parent = Converted["_GameThumbnail"]
-
-            Converted["_Main"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Main"].BackgroundTransparency = 1
-            Converted["_Main"].ClipsDescendants = true
-            Converted["_Main"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_Main"].Name = "Main"
-            Converted["_Main"].Parent = Converted["_Loader"]
-
-            Converted["_No"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_No"].Position = UDim2.new(0, 154, 0, 92)
-            Converted["_No"].Size = UDim2.new(0, 85, 0, 24)
-            Converted["_No"].Name = "No"
-            Converted["_No"].Parent = Converted["_Main"]
-
-            Converted["_UICorner2"].CornerRadius = UDim.new(0, 5)
-            Converted["_UICorner2"].Parent = Converted["_No"]
-
-            Converted["_UIStroke"].Color = Color3.fromRGB(255, 43.00000123679638, 43.00000123679638)
-            Converted["_UIStroke"].Parent = Converted["_No"]
-
-            Converted["_UIGradient1"].Color = ColorSequence.new{
-                ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 73.00000324845314, 73.00000324845314)),
-                ColorSequenceKeypoint.new(1, Color3.fromRGB(144.00000661611557, 47.0000009983778, 47.0000009983778))
-            }
-            Converted["_UIGradient1"].Rotation = -90
-            Converted["_UIGradient1"].Parent = Converted["_No"]
-
-            Converted["_TextLabel"].Font = Enum.Font.GothamMedium
-            Converted["_TextLabel"].Text = "Don't Load"
-            Converted["_TextLabel"].TextColor3 = Color3.fromRGB(225.00001698732376, 225.00001698732376, 225.00001698732376)
-            Converted["_TextLabel"].TextSize = 14
-            Converted["_TextLabel"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_TextLabel"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_TextLabel"].BackgroundTransparency = 1
-            Converted["_TextLabel"].Position = UDim2.new(0.5, 0, 0.5, 0)
-            Converted["_TextLabel"].Size = UDim2.new(0.899999976, 0, 0.899999976, 0)
-            Converted["_TextLabel"].Parent = Converted["_No"]
-
-            Converted["_Yes"].AnchorPoint = Vector2.new(1, 0)
-            Converted["_Yes"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Yes"].Position = UDim2.new(0, 125, 0, 92)
-            Converted["_Yes"].Size = UDim2.new(0, 85, 0, 24)
-            Converted["_Yes"].Name = "Yes"
-            Converted["_Yes"].Parent = Converted["_Main"]
-
-            Converted["_UICorner3"].CornerRadius = UDim.new(0, 5)
-            Converted["_UICorner3"].Parent = Converted["_Yes"]
-
-            Converted["_UIStroke1"].Color = Color3.fromRGB(12.000000234693289, 129.00000751018524, 255)
-            Converted["_UIStroke1"].Parent = Converted["_Yes"]
-
-            Converted["_TextLabel1"].Font = Enum.Font.GothamMedium
-            Converted["_TextLabel1"].Text = "Load"
-            Converted["_TextLabel1"].TextColor3 = Color3.fromRGB(225.00001698732376, 225.00001698732376, 225.00001698732376)
-            Converted["_TextLabel1"].TextSize = 14
-            Converted["_TextLabel1"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_TextLabel1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_TextLabel1"].BackgroundTransparency = 1
-            Converted["_TextLabel1"].Position = UDim2.new(0.5, 0, 0.5, 0)
-            Converted["_TextLabel1"].Size = UDim2.new(0.899999976, 0, 0.899999976, 0)
-            Converted["_TextLabel1"].Parent = Converted["_Yes"]
-
-            Converted["_UIGradient2"].Color = ColorSequence.new{
-                ColorSequenceKeypoint.new(0, Color3.fromRGB(12.000000234693289, 129.00000751018524, 255)),
-                ColorSequenceKeypoint.new(1, Color3.fromRGB(21.000000648200512, 72.00000330805779, 116.00000068545341))
-            }
-            Converted["_UIGradient2"].Rotation = -90
-            Converted["_UIGradient2"].Parent = Converted["_Yes"]
-
-            Converted["_GameName"].Font = Enum.Font.Gotham
-            Converted["_GameName"].Text = "[鈿擼 item asylum"
-            Converted["_GameName"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_GameName"].TextSize = 13
-            Converted["_GameName"].TextTruncate = Enum.TextTruncate.AtEnd
-            Converted["_GameName"].TextWrapped = true
-            Converted["_GameName"].TextXAlignment = Enum.TextXAlignment.Left
-            Converted["_GameName"].TextYAlignment = Enum.TextYAlignment.Top
-            Converted["_GameName"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_GameName"].BackgroundTransparency = 1
-            Converted["_GameName"].Position = UDim2.new(0, 12, 0, 44)
-            Converted["_GameName"].Size = UDim2.new(0, 257, 0, 13)
-            Converted["_GameName"].Name = "GameName"
-            Converted["_GameName"].Parent = Converted["_Main"]
-
-            Converted["_Theme1"].Value = "TextColor3"
-            Converted["_Theme1"].Name = "Theme"
-            Converted["_Theme1"].Parent = Converted["_GameName"]
-
-            Converted["_Category1"].Value = "Symbols"
-            Converted["_Category1"].Name = "Category"
-            Converted["_Category1"].Parent = Converted["_Theme1"]
-
-            Converted["_Ignore1"].Name = "Ignore"
-            Converted["_Ignore1"].Parent = Converted["_Theme1"]
-
-            Converted["_Message"].Font = Enum.Font.GothamMedium
-            Converted["_Message"].Text = "Script: AWP Script Hub"
-            Converted["_Message"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Message"].TextSize = 13
-            Converted["_Message"].TextTruncate = Enum.TextTruncate.AtEnd
-            Converted["_Message"].TextWrapped = true
-            Converted["_Message"].TextXAlignment = Enum.TextXAlignment.Left
-            Converted["_Message"].TextYAlignment = Enum.TextYAlignment.Top
-            Converted["_Message"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Message"].BackgroundTransparency = 1
-            Converted["_Message"].Position = UDim2.new(0, 12, 0, 68)
-            Converted["_Message"].Size = UDim2.new(0, 257, 0, 13)
-            Converted["_Message"].Name = "Message"
-            Converted["_Message"].Parent = Converted["_Main"]
-
-            Converted["_Theme2"].Value = "TextColor3"
-            Converted["_Theme2"].Name = "Theme"
-            Converted["_Theme2"].Parent = Converted["_Message"]
-
-            Converted["_Category2"].Value = "Symbols"
-            Converted["_Category2"].Name = "Category"
-            Converted["_Category2"].Parent = Converted["_Theme2"]
-
-            Converted["_Ignore2"].Name = "Ignore"
-            Converted["_Ignore2"].Parent = Converted["_Theme2"]
-
-            Converted["_Title"].Font = Enum.Font.GothamBold
-            Converted["_Title"].Text = "Game Detected"
-            Converted["_Title"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Title"].TextSize = 18
-            Converted["_Title"].TextTruncate = Enum.TextTruncate.AtEnd
-            Converted["_Title"].TextWrapped = true
-            Converted["_Title"].TextXAlignment = Enum.TextXAlignment.Left
-            Converted["_Title"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title"].BackgroundTransparency = 1
-            Converted["_Title"].Position = UDim2.new(0, 44, 0, 8)
-            Converted["_Title"].Size = UDim2.new(0, 224, 0, 31)
-            Converted["_Title"].Name = "Title"
-            Converted["_Title"].Parent = Converted["_Main"]
-
-            Converted["_Theme3"].Value = "TextColor3"
-            Converted["_Theme3"].Name = "Theme"
-            Converted["_Theme3"].Parent = Converted["_Title"]
-
-            Converted["_Category3"].Value = "Symbols"
-            Converted["_Category3"].Name = "Category"
-            Converted["_Category3"].Parent = Converted["_Theme3"]
-
-            Converted["_Ignore3"].Name = "Ignore"
-            Converted["_Ignore3"].Parent = Converted["_Theme3"]
-
-            Converted["_ImageLabel"].Image = "rbxassetid://11117108054"
-            Converted["_ImageLabel"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_ImageLabel"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_ImageLabel"].BackgroundTransparency = 1
-            Converted["_ImageLabel"].Position = UDim2.new(0, 12, 0, 23)
-            Converted["_ImageLabel"].Size = UDim2.new(0, 24, 0, 24)
-            Converted["_ImageLabel"].Parent = Converted["_Main"]
-
-            Converted["_Shadow"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_Shadow"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Shadow"].BackgroundTransparency = 1
-            Converted["_Shadow"].Position = UDim2.new(0.5, 0, 0.5, 0)
-            Converted["_Shadow"].Size = UDim2.new(1, 55, 1, 55)
-            Converted["_Shadow"].ZIndex = 0
-            Converted["_Shadow"].Name = "Shadow"
-            Converted["_Shadow"].Parent = Converted["_Loader"]
-
-            Converted["_ImageLabel1"].Image = "rbxassetid://10955010523"
-            Converted["_ImageLabel1"].ImageColor3 = Color3.fromRGB(0, 0, 0)
-            Converted["_ImageLabel1"].ImageTransparency = 0.550000011920929
-            Converted["_ImageLabel1"].ScaleType = Enum.ScaleType.Slice
-            Converted["_ImageLabel1"].SliceCenter = Rect.new(60, 60, 360, 360)
-            Converted["_ImageLabel1"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_ImageLabel1"].BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-            Converted["_ImageLabel1"].BackgroundTransparency = 1
-            Converted["_ImageLabel1"].Position = UDim2.new(0.5, 0, 0.5, 0)
-            Converted["_ImageLabel1"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_ImageLabel1"].ZIndex = 0
-            Converted["_ImageLabel1"].Parent = Converted["_Shadow"]
-
-            Converted["_Theme4"].Value = "ImageColor3"
-            Converted["_Theme4"].Name = "Theme"
-            Converted["_Theme4"].Parent = Converted["_ImageLabel1"]
-
-            Converted["_Category4"].Value = "Shadow"
-            Converted["_Category4"].Name = "Category"
-            Converted["_Category4"].Parent = Converted["_Theme4"]
-
-            Converted["_Ignore4"].Name = "Ignore"
-            Converted["_Ignore4"].Parent = Converted["_Theme4"]
-
-            Converted["_Key"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Key"].BackgroundTransparency = 1
-            Converted["_Key"].ClipsDescendants = true
-            Converted["_Key"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_Key"].Visible = false
-            Converted["_Key"].Name = "Key"
-            Converted["_Key"].Parent = Converted["_Loader"]
-
-            Converted["_Input"].AnchorPoint = Vector2.new(1, 0)
-            Converted["_Input"].BackgroundColor3 = Color3.fromRGB(28.000000230968, 28.000000230968, 28.000000230968)
-            Converted["_Input"].Position = UDim2.new(0, 269, 0, 94)
-            Converted["_Input"].Size = UDim2.new(0, 257, 0, 24)
-            Converted["_Input"].Name = "Input"
-            Converted["_Input"].Parent = Converted["_Key"]
-
-            Converted["_UICorner4"].CornerRadius = UDim.new(0, 5)
-            Converted["_UICorner4"].Parent = Converted["_Input"]
-
-            Converted["_UIStroke2"].Color = Color3.fromRGB(49.000004678964615, 49.000004678964615, 49.000004678964615)
-            Converted["_UIStroke2"].Parent = Converted["_Input"]
-
-            Converted["_TextBox"].Font = Enum.Font.Gotham
-            Converted["_TextBox"].Text = ""
-            Converted["_TextBox"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_TextBox"].TextSize = 14
-            Converted["_TextBox"].TextTruncate = Enum.TextTruncate.AtEnd
-            Converted["_TextBox"].TextXAlignment = Enum.TextXAlignment.Left
-            Converted["_TextBox"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_TextBox"].BackgroundTransparency = 1
-            Converted["_TextBox"].Position = UDim2.new(0.0311284047, 0, 0, 0)
-            Converted["_TextBox"].Size = UDim2.new(0.968871593, -24, 1, 0)
-            Converted["_TextBox"].Parent = Converted["_Input"]
-
-            Converted["_ImageLabel2"].Image = "rbxassetid://11116814746"
-            Converted["_ImageLabel2"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_ImageLabel2"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_ImageLabel2"].BackgroundTransparency = 1
-            Converted["_ImageLabel2"].Position = UDim2.new(1, -12, 0.5, 0)
-            Converted["_ImageLabel2"].Size = UDim2.new(0, 21, 0, 21)
-            Converted["_ImageLabel2"].Parent = Converted["_Input"]
-
-            Converted["_Message1"].Font = Enum.Font.Gotham
-            Converted["_Message1"].Text = "The key is in the discord server. Copy the  invite by pressing the button above."
-            Converted["_Message1"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Message1"].TextScaled = true
-            Converted["_Message1"].TextSize = 1
-            Converted["_Message1"].TextTruncate = Enum.TextTruncate.AtEnd
-            Converted["_Message1"].TextWrapped = true
-            Converted["_Message1"].TextXAlignment = Enum.TextXAlignment.Left
-            Converted["_Message1"].TextYAlignment = Enum.TextYAlignment.Top
-            Converted["_Message1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Message1"].BackgroundTransparency = 1
-            Converted["_Message1"].Position = UDim2.new(0, 12, 0, 40)
-            Converted["_Message1"].Size = UDim2.new(0, 257, 0, 35)
-            Converted["_Message1"].Name = "Message"
-            Converted["_Message1"].Parent = Converted["_Key"]
-
-            Converted["_Theme5"].Value = "TextColor3"
-            Converted["_Theme5"].Name = "Theme"
-            Converted["_Theme5"].Parent = Converted["_Message1"]
-
-            Converted["_Category5"].Value = "Symbols"
-            Converted["_Category5"].Name = "Category"
-            Converted["_Category5"].Parent = Converted["_Theme5"]
-
-            Converted["_Ignore5"].Name = "Ignore"
-            Converted["_Ignore5"].Parent = Converted["_Theme5"]
-
-            Converted["_Title1"].Font = Enum.Font.GothamBold
-            Converted["_Title1"].Text = "Key System"
-            Converted["_Title1"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Title1"].TextSize = 18
-            Converted["_Title1"].TextTruncate = Enum.TextTruncate.AtEnd
-            Converted["_Title1"].TextWrapped = true
-            Converted["_Title1"].TextXAlignment = Enum.TextXAlignment.Left
-            Converted["_Title1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title1"].BackgroundTransparency = 1
-            Converted["_Title1"].Position = UDim2.new(0, 12, 0, 8)
-            Converted["_Title1"].Size = UDim2.new(0, 102, 0, 31)
-            Converted["_Title1"].Name = "Title"
-            Converted["_Title1"].Parent = Converted["_Key"]
-
-            Converted["_Theme6"].Value = "TextColor3"
-            Converted["_Theme6"].Name = "Theme"
-            Converted["_Theme6"].Parent = Converted["_Title1"]
-
-            Converted["_Category6"].Value = "Symbols"
-            Converted["_Category6"].Name = "Category"
-            Converted["_Category6"].Parent = Converted["_Theme6"]
-
-            Converted["_Ignore6"].Name = "Ignore"
-            Converted["_Ignore6"].Parent = Converted["_Theme6"]
-
-            Converted["_Directions"].Font = Enum.Font.GothamMedium
-            Converted["_Directions"].Text = "Enter key below"
-            Converted["_Directions"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Directions"].TextSize = 13
-            Converted["_Directions"].TextTruncate = Enum.TextTruncate.AtEnd
-            Converted["_Directions"].TextWrapped = true
-            Converted["_Directions"].TextXAlignment = Enum.TextXAlignment.Left
-            Converted["_Directions"].TextYAlignment = Enum.TextYAlignment.Top
-            Converted["_Directions"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Directions"].BackgroundTransparency = 1
-            Converted["_Directions"].Position = UDim2.new(0, 12, 0, 75)
-            Converted["_Directions"].Size = UDim2.new(0, 257, 0, 15)
-            Converted["_Directions"].Name = "Directions"
-            Converted["_Directions"].Parent = Converted["_Key"]
-
-            Converted["_Theme7"].Value = "TextColor3"
-            Converted["_Theme7"].Name = "Theme"
-            Converted["_Theme7"].Parent = Converted["_Directions"]
-
-            Converted["_Category7"].Value = "Symbols"
-            Converted["_Category7"].Name = "Category"
-            Converted["_Category7"].Parent = Converted["_Theme7"]
-
-            Converted["_Ignore7"].Name = "Ignore"
-            Converted["_Ignore7"].Parent = Converted["_Theme7"]
-
-            Converted["_Interact"].AnchorPoint = Vector2.new(1, 0)
-            Converted["_Interact"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Interact"].BackgroundTransparency = 1
-            Converted["_Interact"].Position = UDim2.new(0, 268, 0, 12)
-            Converted["_Interact"].Size = UDim2.new(0, 147, 0, 21)
-            Converted["_Interact"].Name = "Interact"
-            Converted["_Interact"].Parent = Converted["_Key"]
-
-            Converted["_Button"].AnchorPoint = Vector2.new(1, 0)
-            Converted["_Button"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Button"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Button"].ClipsDescendants = true
-            Converted["_Button"].Position = UDim2.new(1, 0, 0, 0)
-            Converted["_Button"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Button"].Name = "Button"
-            Converted["_Button"].Parent = Converted["_Interact"]
-
-            Converted["_UICorner5"].CornerRadius = UDim.new(0, 5)
-            Converted["_UICorner5"].Parent = Converted["_Button"]
-
-            Converted["_UIStroke3"].Color = Color3.fromRGB(12.000000234693289, 129.00000751018524, 255)
-            Converted["_UIStroke3"].Parent = Converted["_Button"]
-
-            Converted["_UIGradient3"].Color = ColorSequence.new{
-                ColorSequenceKeypoint.new(0, Color3.fromRGB(12.000000234693289, 129.00000751018524, 255)),
-                ColorSequenceKeypoint.new(1, Color3.fromRGB(21.000000648200512, 72.00000330805779, 116.00000068545341))
-            }
-            Converted["_UIGradient3"].Rotation = -90
-            Converted["_UIGradient3"].Parent = Converted["_Button"]
-
-            Converted["_TextLabel2"].Font = Enum.Font.Gotham
-            Converted["_TextLabel2"].Text = "Copied"
-            Converted["_TextLabel2"].TextColor3 = Color3.fromRGB(225.00001698732376, 225.00001698732376, 225.00001698732376)
-            Converted["_TextLabel2"].TextSize = 13
-            Converted["_TextLabel2"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_TextLabel2"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_TextLabel2"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_TextLabel2"].BackgroundTransparency = 1
-            Converted["_TextLabel2"].Position = UDim2.new(0.5, 0, 0.5, 0)
-            Converted["_TextLabel2"].Size = UDim2.new(0, 1, 0.5, 0)
-            Converted["_TextLabel2"].Parent = Converted["_Button"]
-
-            Converted["_UISizeConstraint"].MaxSize = Vector2.new(147, math.huge)
-            Converted["_UISizeConstraint"].Parent = Converted["_TextLabel2"]
-
-            Converted["_UIListLayout"].Padding = UDim.new(0, 4)
-            Converted["_UIListLayout"].FillDirection = Enum.FillDirection.Horizontal
-            Converted["_UIListLayout"].HorizontalAlignment = Enum.HorizontalAlignment.Center
-            Converted["_UIListLayout"].VerticalAlignment = Enum.VerticalAlignment.Center
-            Converted["_UIListLayout"].Parent = Converted["_Button"]
-
-            Converted["_0_padding"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_0_padding"].BackgroundTransparency = 1
-            Converted["_0_padding"].Name = "0_padding"
-            Converted["_0_padding"].Parent = Converted["_Button"]
-
-            Converted["_padding"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_padding"].BackgroundTransparency = 1
-            Converted["_padding"].Name = "padding"
-            Converted["_padding"].Parent = Converted["_Button"]
-
-            Converted["_ImageLabel3"].Image = "http://www.roblox.com/asset/?id=10954923256"
-            Converted["_ImageLabel3"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_ImageLabel3"].BackgroundTransparency = 1
-            Converted["_ImageLabel3"].Size = UDim2.new(0, 18, 0, 18)
-            Converted["_ImageLabel3"].Parent = Converted["_Button"]
-
-            Converted["_Profile"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Profile"].BackgroundTransparency = 1
-            Converted["_Profile"].ClipsDescendants = true
-            Converted["_Profile"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_Profile"].Visible = false
-            Converted["_Profile"].Name = "Profile"
-            Converted["_Profile"].Parent = Converted["_Loader"]
-
-            Converted["_Title2"].Font = Enum.Font.GothamBold
-            Converted["_Title2"].Text = "Welcome back."
-            Converted["_Title2"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Title2"].TextSize = 18
-            Converted["_Title2"].TextTruncate = Enum.TextTruncate.AtEnd
-            Converted["_Title2"].TextWrapped = true
-            Converted["_Title2"].TextXAlignment = Enum.TextXAlignment.Left
-            Converted["_Title2"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title2"].BackgroundTransparency = 1
-            Converted["_Title2"].Position = UDim2.new(0, 12, 0, 8)
-            Converted["_Title2"].Size = UDim2.new(0, 224, 0, 31)
-            Converted["_Title2"].Name = "Title"
-            Converted["_Title2"].Parent = Converted["_Profile"]
-
-            Converted["_Theme8"].Value = "TextColor3"
-            Converted["_Theme8"].Name = "Theme"
-            Converted["_Theme8"].Parent = Converted["_Title2"]
-
-            Converted["_Category8"].Value = "Symbols"
-            Converted["_Category8"].Name = "Category"
-            Converted["_Category8"].Parent = Converted["_Theme8"]
-
-            Converted["_Ignore8"].Name = "Ignore"
-            Converted["_Ignore8"].Parent = Converted["_Theme8"]
-
-            Converted["_Player"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_Player"].BackgroundColor3 = Color3.fromRGB(28.000000230968, 28.000000230968, 28.000000230968)
-            Converted["_Player"].BorderSizePixel = 0
-            Converted["_Player"].Position = UDim2.new(0, 140, 0, 77)
-            Converted["_Player"].Size = UDim2.new(0, 245, 0, 71)
-            Converted["_Player"].Name = "Player"
-            Converted["_Player"].Parent = Converted["_Profile"]
-
-            Converted["_Gradient"].BackgroundColor3 = Color3.fromRGB(0, 170.0000050663948, 255)
-            Converted["_Gradient"].BorderSizePixel = 0
-            Converted["_Gradient"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_Gradient"].ZIndex = 0
-            Converted["_Gradient"].Name = "Gradient"
-            Converted["_Gradient"].Parent = Converted["_Player"]
-
-            Converted["_UICorner6"].CornerRadius = UDim.new(0, 7)
-            Converted["_UICorner6"].Parent = Converted["_Gradient"]
-
-            Converted["_UIGradient4"].Offset = Vector2.new(-0.5, 0)
-            Converted["_UIGradient4"].Rotation = 35
-            Converted["_UIGradient4"].Transparency = NumberSequence.new{
-                NumberSequenceKeypoint.new(0, 0.22499996423721313),
-                NumberSequenceKeypoint.new(1, 1)
-            }
-            Converted["_UIGradient4"].Parent = Converted["_Gradient"]
-
-            Converted["_UIStroke4"].Color = Color3.fromRGB(48.00000473856926, 48.00000473856926, 48.00000473856926)
-            Converted["_UIStroke4"].Parent = Converted["_Gradient"]
-
-            Converted["_UICorner7"].CornerRadius = UDim.new(0, 7)
-            Converted["_UICorner7"].Parent = Converted["_Player"]
-
-            Converted["_Thumbnail"].Image = "rbxthumb://type=AvatarHeadShot&id=2755663001&w=420&h=420"
-            Converted["_Thumbnail"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Thumbnail"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Thumbnail"].BackgroundTransparency = 0.75
-            Converted["_Thumbnail"].Position = UDim2.new(0, 7, 0.5, 0)
-            Converted["_Thumbnail"].Size = UDim2.new(0, 57, 0, 57)
-            Converted["_Thumbnail"].Name = "Thumbnail"
-            Converted["_Thumbnail"].Parent = Converted["_Player"]
-
-            Converted["_UICorner8"].CornerRadius = UDim.new(1, 0)
-            Converted["_UICorner8"].Parent = Converted["_Thumbnail"]
-
-            Converted["_PlayerName"].AnchorPoint = Vector2.new(0, 1)
-            Converted["_PlayerName"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_PlayerName"].BackgroundTransparency = 1
-            Converted["_PlayerName"].Position = UDim2.new(0.298000008, 0, 0.550000012, 3)
-            Converted["_PlayerName"].Size = UDim2.new(0, 159, 0, 30)
-            Converted["_PlayerName"].Name = "PlayerName"
-            Converted["_PlayerName"].Parent = Converted["_Player"]
-
-            Converted["_TextLabel3"].Font = Enum.Font.GothamBold
-            Converted["_TextLabel3"].Text = "TrojanHorse57"
-            Converted["_TextLabel3"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_TextLabel3"].TextSize = 16
-            Converted["_TextLabel3"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_TextLabel3"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_TextLabel3"].BackgroundTransparency = 1
-            Converted["_TextLabel3"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_TextLabel3"].Parent = Converted["_PlayerName"]
-
-            Converted["_UIListLayout1"].Padding = UDim.new(0, 4)
-            Converted["_UIListLayout1"].FillDirection = Enum.FillDirection.Horizontal
-            Converted["_UIListLayout1"].VerticalAlignment = Enum.VerticalAlignment.Center
-            Converted["_UIListLayout1"].Parent = Converted["_PlayerName"]
-
-            Converted["_ImageLabel4"].Image = "http://www.roblox.com/asset/?id=11117540300"
-            Converted["_ImageLabel4"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_ImageLabel4"].BackgroundTransparency = 1
-            Converted["_ImageLabel4"].Size = UDim2.new(0, 16, 0, 16)
-            Converted["_ImageLabel4"].Parent = Converted["_PlayerName"]
-
-            Converted["_Rank"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Rank"].BackgroundTransparency = 1
-            Converted["_Rank"].Position = UDim2.new(0.298000008, 0, 0.524999976, 3)
-            Converted["_Rank"].Size = UDim2.new(0, 159, 0, 30)
-            Converted["_Rank"].Name = "Rank"
-            Converted["_Rank"].Parent = Converted["_Player"]
-
-            Converted["_TextLabel4"].Font = Enum.Font.GothamMedium
-            Converted["_TextLabel4"].Text = "Developer"
-            Converted["_TextLabel4"].TextColor3 = Color3.fromRGB(164.00000542402267, 164.00000542402267, 164.00000542402267)
-            Converted["_TextLabel4"].TextSize = 13
-            Converted["_TextLabel4"].TextYAlignment = Enum.TextYAlignment.Top
-            Converted["_TextLabel4"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_TextLabel4"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_TextLabel4"].BackgroundTransparency = 1
-            Converted["_TextLabel4"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_TextLabel4"].Parent = Converted["_Rank"]
-
-            Converted["_UIListLayout2"].Padding = UDim.new(0, 4)
-            Converted["_UIListLayout2"].FillDirection = Enum.FillDirection.Horizontal
-            Converted["_UIListLayout2"].VerticalAlignment = Enum.VerticalAlignment.Center
-            Converted["_UIListLayout2"].Parent = Converted["_Rank"]
-
-            Converted["_Close"].Image = "http://www.roblox.com/asset/?id=10259890025"
-            Converted["_Close"].ImageColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Close"].AnchorPoint = Vector2.new(1, 0)
-            Converted["_Close"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Close"].BackgroundTransparency = 1
-            Converted["_Close"].Position = UDim2.new(0, 273, 0, 7)
-            Converted["_Close"].Size = UDim2.new(0, 23, 0, 23)
-            Converted["_Close"].Name = "Close"
-            Converted["_Close"].Parent = Converted["_Profile"]
-
-            Converted["_Theme9"].Value = "ImageColor3"
-            Converted["_Theme9"].Name = "Theme"
-            Converted["_Theme9"].Parent = Converted["_Close"]
-
-            Converted["_Category9"].Value = "Symbols"
-            Converted["_Category9"].Name = "Category"
-            Converted["_Category9"].Parent = Converted["_Theme9"]
-
-            Converted["_Ignore9"].Name = "Ignore"
-            Converted["_Ignore9"].Parent = Converted["_Theme9"]
-
-            return Converted["_Loader"]
-        end
-
-        if info.CheckKey then
-            info.UseLoader = true
-        end
-
-        info.Rank = info.Rank or "User"
-        info.RankColor = info.RankColor or Color3.new(0,1,0)
-
-        if info.CheckKey and not info.Discord then
-            warn("You must include a discord argument when using check key argument!")
-            wait(9e9)
-            error()
-        end
-
-        local function makeLibrary()
-            -- Generated using RoadToGlory's Converter v1.1 (RoadToGlory#9879)
-            local Converted = {
-                ["_Atlas"] = Instance.new("ScreenGui");
-                ["_UI_Library"] = Instance.new("Folder");
-                ["_Name"] = Instance.new("StringValue");
-                ["_Creator"] = Instance.new("StringValue");
-                ["_Discord"] = Instance.new("StringValue");
-                ["_Main"] = Instance.new("Frame");
-                ["_Contents"] = Instance.new("Frame");
-                ["_Appearance"] = Instance.new("Frame");
-                ["_Fade"] = Instance.new("Frame");
-                ["_UIGradient"] = Instance.new("UIGradient");
-                ["_Top"] = Instance.new("Frame");
-                ["_UICorner"] = Instance.new("UICorner");
-                ["_Theme"] = Instance.new("StringValue");
-                ["_Category"] = Instance.new("StringValue");
-                ["_Ignore"] = Instance.new("BoolValue");
-                ["_Line"] = Instance.new("Frame");
-                ["_Theme1"] = Instance.new("StringValue");
-                ["_Category1"] = Instance.new("StringValue");
-                ["_Ignore1"] = Instance.new("BoolValue");
-                ["_Top_fill"] = Instance.new("Frame");
-                ["_Theme2"] = Instance.new("StringValue");
-                ["_Category2"] = Instance.new("StringValue");
-                ["_Ignore2"] = Instance.new("BoolValue");
-                ["_Top1"] = Instance.new("Frame");
-                ["_Close"] = Instance.new("ImageLabel");
-                ["_UIAspectRatioConstraint"] = Instance.new("UIAspectRatioConstraint");
-                ["_Theme3"] = Instance.new("StringValue");
-                ["_Category3"] = Instance.new("StringValue");
-                ["_Ignore3"] = Instance.new("BoolValue");
-                ["_Menu"] = Instance.new("ImageLabel");
-                ["_UIAspectRatioConstraint1"] = Instance.new("UIAspectRatioConstraint");
-                ["_Theme4"] = Instance.new("StringValue");
-                ["_Category4"] = Instance.new("StringValue");
-                ["_Ignore4"] = Instance.new("BoolValue");
-                ["_Title"] = Instance.new("TextLabel");
-                ["_UISizeConstraint"] = Instance.new("UISizeConstraint");
-                ["_Theme5"] = Instance.new("StringValue");
-                ["_Category5"] = Instance.new("StringValue");
-                ["_Ignore5"] = Instance.new("BoolValue");
-                ["_Info"] = Instance.new("ImageLabel");
-                ["_UIAspectRatioConstraint2"] = Instance.new("UIAspectRatioConstraint");
-                ["_Credits"] = Instance.new("Frame");
-                ["_Main1"] = Instance.new("Frame");
-                ["_UICorner1"] = Instance.new("UICorner");
-                ["_UIListLayout"] = Instance.new("UIListLayout");
-                ["_Frame"] = Instance.new("Frame");
-                ["_B"] = Instance.new("TextLabel");
-                ["_A"] = Instance.new("TextLabel");
-                ["_UIListLayout1"] = Instance.new("UIListLayout");
-                ["_padding"] = Instance.new("Frame");
-                ["_0_padding"] = Instance.new("Frame");
-                ["_Arrow"] = Instance.new("ImageLabel");
-                ["_Theme6"] = Instance.new("StringValue");
-                ["_Category6"] = Instance.new("StringValue");
-                ["_Ignore6"] = Instance.new("BoolValue");
-                ["_Search"] = Instance.new("ImageLabel");
-                ["_UIAspectRatioConstraint3"] = Instance.new("UIAspectRatioConstraint");
-                ["_Theme7"] = Instance.new("StringValue");
-                ["_Category7"] = Instance.new("StringValue");
-                ["_Ignore7"] = Instance.new("BoolValue");
-                ["_SearchBar"] = Instance.new("Frame");
-                ["_UICorner2"] = Instance.new("UICorner");
-                ["_Icon"] = Instance.new("ImageLabel");
-                ["_Theme8"] = Instance.new("StringValue");
-                ["_Category8"] = Instance.new("StringValue");
-                ["_Ignore8"] = Instance.new("BoolValue");
-                ["_TextBox"] = Instance.new("TextBox");
-                ["_Theme9"] = Instance.new("StringValue");
-                ["_Category9"] = Instance.new("StringValue");
-                ["_Ignore9"] = Instance.new("BoolValue");
-                ["_Theme10"] = Instance.new("StringValue");
-                ["_Category10"] = Instance.new("StringValue");
-                ["_Ignore10"] = Instance.new("BoolValue");
-                ["_Theme11"] = Instance.new("StringValue");
-                ["_Category11"] = Instance.new("StringValue");
-                ["_Ignore11"] = Instance.new("BoolValue");
-                ["_Drag"] = Instance.new("TextButton");
-                ["_Theme12"] = Instance.new("ImageLabel");
-                ["_UIAspectRatioConstraint4"] = Instance.new("UIAspectRatioConstraint");
-                ["_Theme13"] = Instance.new("StringValue");
-                ["_Category12"] = Instance.new("StringValue");
-                ["_Ignore12"] = Instance.new("BoolValue");
-                ["_Background"] = Instance.new("Frame");
-                ["_UICorner3"] = Instance.new("UICorner");
-                ["_Theme14"] = Instance.new("StringValue");
-                ["_Category13"] = Instance.new("StringValue");
-                ["_Ignore13"] = Instance.new("BoolValue");
-                ["_Pages"] = Instance.new("Frame");
-                ["_UICorner4"] = Instance.new("UICorner");
-                ["_Close1"] = Instance.new("ImageLabel");
-                ["_UIAspectRatioConstraint5"] = Instance.new("UIAspectRatioConstraint");
-                ["_Theme15"] = Instance.new("StringValue");
-                ["_Category14"] = Instance.new("StringValue");
-                ["_Ignore14"] = Instance.new("BoolValue");
-                ["_Line1"] = Instance.new("Frame");
-                ["_Theme16"] = Instance.new("StringValue");
-                ["_Category15"] = Instance.new("StringValue");
-                ["_Ignore15"] = Instance.new("BoolValue");
-                ["_ScrollingFrame"] = Instance.new("ScrollingFrame");
-                ["_UIListLayout2"] = Instance.new("UIListLayout");
-                ["_Theme17"] = Instance.new("StringValue");
-                ["_Category16"] = Instance.new("StringValue");
-                ["_Ignore16"] = Instance.new("BoolValue");
-                ["_Contents1"] = Instance.new("Frame");
-                ["_Page"] = Instance.new("Frame");
-                ["_ScrollingFrame1"] = Instance.new("ScrollingFrame");
-                ["_UIListLayout3"] = Instance.new("UIListLayout");
-                ["_padding1"] = Instance.new("Frame");
-                ["_0_padding1"] = Instance.new("Frame");
-                ["_Theme18"] = Instance.new("StringValue");
-                ["_Category17"] = Instance.new("StringValue");
-                ["_Ignore17"] = Instance.new("BoolValue");
-                ["_Shadow"] = Instance.new("Frame");
-                ["_ImageLabel"] = Instance.new("ImageLabel");
-                ["_Theme19"] = Instance.new("StringValue");
-                ["_Category18"] = Instance.new("StringValue");
-                ["_Ignore18"] = Instance.new("BoolValue");
-                ["_Resize"] = Instance.new("Frame");
-                ["_Frame1"] = Instance.new("Frame");
-                ["_Frame2"] = Instance.new("Frame");
-                ["_ResizeArea"] = Instance.new("TextButton");
-                ["_Modal"] = Instance.new("TextButton");
-                ["_Notifications"] = Instance.new("Frame");
-                ["_UIListLayout4"] = Instance.new("UIListLayout");
-                ["_Hint"] = Instance.new("Frame");
-                ["_Arrow1"] = Instance.new("ImageLabel");
-                ["_Theme20"] = Instance.new("StringValue");
-                ["_Category19"] = Instance.new("StringValue");
-                ["_Ignore19"] = Instance.new("BoolValue");
-                ["_Main2"] = Instance.new("Frame");
-                ["_Main3"] = Instance.new("Frame");
-                ["_UICorner5"] = Instance.new("UICorner");
-                ["_UIListLayout5"] = Instance.new("UIListLayout");
-                ["_Frame3"] = Instance.new("Frame");
-                ["_UIListLayout6"] = Instance.new("UIListLayout");
-                ["_0_padding2"] = Instance.new("Frame");
-                ["_1_main"] = Instance.new("Frame");
-                ["_Text"] = Instance.new("TextLabel");
-                ["_0_padding3"] = Instance.new("Frame");
-                ["_padding2"] = Instance.new("Frame");
-                ["_UIListLayout7"] = Instance.new("UIListLayout");
-                ["_2_padding"] = Instance.new("Frame");
-                ["_padding3"] = Instance.new("Frame");
-                ["_0_padding4"] = Instance.new("Frame");
-                ["_UIStroke"] = Instance.new("UIStroke");
-                ["_Theme21"] = Instance.new("StringValue");
-                ["_Category20"] = Instance.new("StringValue");
-                ["_Ignore20"] = Instance.new("BoolValue");
-                ["_Theme22"] = Instance.new("StringValue");
-                ["_Category21"] = Instance.new("StringValue");
-                ["_Ignore21"] = Instance.new("BoolValue");
-            }
-
-            --Properties
-
-            Converted["_Atlas"].DisplayOrder = 99
-            Converted["_Atlas"].IgnoreGuiInset = true
-            Converted["_Atlas"].ResetOnSpawn = false
-            Converted["_Atlas"].ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-            Converted["_Atlas"].Name = "Atlas"
-            Converted["_Atlas"].Parent = game:GetService("CoreGui")
-
-            Converted["_UI_Library"].Name = "UI_Library"
-            Converted["_UI_Library"].Parent = Converted["_Atlas"]
-
-            Converted["_Name"].Value = "Atlas UI Library"
-            Converted["_Name"].Name = "Name"
-            Converted["_Name"].Parent = Converted["_UI_Library"]
-
-            Converted["_Creator"].Value = "RoadToGlory#9879"
-            Converted["_Creator"].Name = "Creator"
-            Converted["_Creator"].Parent = Converted["_UI_Library"]
-
-            Converted["_Discord"].Value = "https://discord.gg/xu5dDS3Pb9"
-            Converted["_Discord"].Name = "Discord"
-            Converted["_Discord"].Parent = Converted["_UI_Library"]
-
-            Converted["_Main"].BackgroundColor3 = Color3.fromRGB(18.000000827014446, 18.000000827014446, 18.000000827014446)
-            Converted["_Main"].BackgroundTransparency = 1
-            Converted["_Main"].Position = UDim2.new(0.5, -240, 0.5, -219)
-            Converted["_Main"].Size = UDim2.new(0, 480, 0, 438)
-            Converted["_Main"].ZIndex = 100
-            Converted["_Main"].Name = "Main"
-            Converted["_Main"].Parent = Converted["_Atlas"]
-
-            Converted["_Contents"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Contents"].BackgroundTransparency = 1
-            Converted["_Contents"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_Contents"].ZIndex = 10
-            Converted["_Contents"].Name = "Contents"
-            Converted["_Contents"].Parent = Converted["_Main"]
-
-            Converted["_Appearance"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Appearance"].BackgroundTransparency = 1
-            Converted["_Appearance"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_Appearance"].ZIndex = 10
-            Converted["_Appearance"].Name = "Appearance"
-            Converted["_Appearance"].Parent = Converted["_Contents"]
-
-            Converted["_Fade"].BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-            Converted["_Fade"].BorderSizePixel = 0
-            Converted["_Fade"].Position = UDim2.new(0, 0, 0, 32)
-            Converted["_Fade"].Size = UDim2.new(1, 0, 0, 9)
-            Converted["_Fade"].ZIndex = 28
-            Converted["_Fade"].Name = "Fade"
-            Converted["_Fade"].Parent = Converted["_Appearance"]
-
-            Converted["_UIGradient"].Rotation = 90
-            Converted["_UIGradient"].Transparency = NumberSequence.new{
-                NumberSequenceKeypoint.new(0, 0.48750001192092896),
-                NumberSequenceKeypoint.new(1, 1)
-            }
-            Converted["_UIGradient"].Parent = Converted["_Fade"]
-
-            Converted["_Top"].BackgroundColor3 = Color3.fromRGB(30.00000011175871, 30.00000011175871, 30.00000011175871)
-            Converted["_Top"].Size = UDim2.new(1, 0, 0, 32)
-            Converted["_Top"].ZIndex = 30
-            Converted["_Top"].Name = "Top"
-            Converted["_Top"].Parent = Converted["_Appearance"]
-
-            Converted["_UICorner"].CornerRadius = UDim.new(0, 7)
-            Converted["_UICorner"].Parent = Converted["_Top"]
-
-            Converted["_Theme"].Value = "BackgroundColor3"
-            Converted["_Theme"].Name = "Theme"
-            Converted["_Theme"].Parent = Converted["_Top"]
-
-            Converted["_Category"].Value = "LightContrast"
-            Converted["_Category"].Name = "Category"
-            Converted["_Category"].Parent = Converted["_Theme"]
-
-            Converted["_Ignore"].Name = "Ignore"
-            Converted["_Ignore"].Parent = Converted["_Theme"]
-
-            Converted["_Line"].BackgroundColor3 = Color3.fromRGB(164.00000542402267, 53.00000064074993, 90.00000223517418)
-            Converted["_Line"].BorderSizePixel = 0
-            Converted["_Line"].Position = UDim2.new(0, 0, 0, 32)
-            Converted["_Line"].Size = UDim2.new(1, 0, 0, 2)
-            Converted["_Line"].ZIndex = 29
-            Converted["_Line"].Name = "Line"
-            Converted["_Line"].Parent = Converted["_Appearance"]
-
-            Converted["_Theme1"].Value = "BackgroundColor3"
-            Converted["_Theme1"].Name = "Theme"
-            Converted["_Theme1"].Parent = Converted["_Line"]
-
-            Converted["_Category1"].Value = "Main"
-            Converted["_Category1"].Name = "Category"
-            Converted["_Category1"].Parent = Converted["_Theme1"]
-
-            Converted["_Ignore1"].Name = "Ignore"
-            Converted["_Ignore1"].Parent = Converted["_Theme1"]
-
-            Converted["_Top_fill"].AnchorPoint = Vector2.new(0, 1)
-            Converted["_Top_fill"].BackgroundColor3 = Color3.fromRGB(30.00000011175871, 30.00000011175871, 30.00000011175871)
-            Converted["_Top_fill"].BorderSizePixel = 0
-            Converted["_Top_fill"].Position = UDim2.new(0, 0, 0, 32)
-            Converted["_Top_fill"].Size = UDim2.new(1, 0, 0, 4)
-            Converted["_Top_fill"].ZIndex = 27
-            Converted["_Top_fill"].Name = "Top_fill"
-            Converted["_Top_fill"].Parent = Converted["_Appearance"]
-
-            Converted["_Theme2"].Value = "BackgroundColor3"
-            Converted["_Theme2"].Name = "Theme"
-            Converted["_Theme2"].Parent = Converted["_Top_fill"]
-
-            Converted["_Category2"].Value = "LightContrast"
-            Converted["_Category2"].Name = "Category"
-            Converted["_Category2"].Parent = Converted["_Theme2"]
-
-            Converted["_Ignore2"].Name = "Ignore"
-            Converted["_Ignore2"].Parent = Converted["_Theme2"]
-
-            Converted["_Top1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Top1"].BackgroundTransparency = 1
-            Converted["_Top1"].Size = UDim2.new(1, 0, 0, 32)
-            Converted["_Top1"].ZIndex = 10
-            Converted["_Top1"].Name = "Top"
-            Converted["_Top1"].Parent = Converted["_Contents"]
-
-            Converted["_Close"].Image = "http://www.roblox.com/asset/?id=10259890025"
-            Converted["_Close"].ImageColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Close"].AnchorPoint = Vector2.new(1, 0.5)
-            Converted["_Close"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Close"].BackgroundTransparency = 1
-            Converted["_Close"].Position = UDim2.new(1, -5, 0.5, 0)
-            Converted["_Close"].Size = UDim2.new(0, 22, 0, 22)
-            Converted["_Close"].Name = "Close"
-            Converted["_Close"].Parent = Converted["_Top1"]
-
-            Converted["_UIAspectRatioConstraint"].AspectType = Enum.AspectType.ScaleWithParentSize
-            Converted["_UIAspectRatioConstraint"].DominantAxis = Enum.DominantAxis.Height
-            Converted["_UIAspectRatioConstraint"].Parent = Converted["_Close"]
-
-            Converted["_Theme3"].Value = "ImageColor3"
-            Converted["_Theme3"].Name = "Theme"
-            Converted["_Theme3"].Parent = Converted["_Close"]
-
-            Converted["_Category3"].Value = "Symbols"
-            Converted["_Category3"].Name = "Category"
-            Converted["_Category3"].Parent = Converted["_Theme3"]
-
-            Converted["_Ignore3"].Name = "Ignore"
-            Converted["_Ignore3"].Parent = Converted["_Theme3"]
-
-            Converted["_Menu"].Image = "http://www.roblox.com/asset/?id=10953432322"
-            Converted["_Menu"].ImageColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Menu"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Menu"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Menu"].BackgroundTransparency = 1
-            Converted["_Menu"].Position = UDim2.new(0, 9, 0.5, 0)
-            Converted["_Menu"].Size = UDim2.new(0, 22, 0, 22)
-            Converted["_Menu"].Name = "Menu"
-            Converted["_Menu"].Parent = Converted["_Top1"]
-
-            Converted["_UIAspectRatioConstraint1"].AspectType = Enum.AspectType.ScaleWithParentSize
-            Converted["_UIAspectRatioConstraint1"].DominantAxis = Enum.DominantAxis.Height
-            Converted["_UIAspectRatioConstraint1"].Parent = Converted["_Menu"]
-
-            Converted["_Theme4"].Value = "ImageColor3"
-            Converted["_Theme4"].Name = "Theme"
-            Converted["_Theme4"].Parent = Converted["_Menu"]
-
-            Converted["_Category4"].Value = "Symbols"
-            Converted["_Category4"].Name = "Category"
-            Converted["_Category4"].Parent = Converted["_Theme4"]
-
-            Converted["_Ignore4"].Name = "Ignore"
-            Converted["_Ignore4"].Parent = Converted["_Theme4"]
-
-            Converted["_Title"].Font = Enum.Font.GothamBlack
-            Converted["_Title"].Text = "Atlas"
-            Converted["_Title"].TextColor3 = Color3.fromRGB(164.00000542402267, 53.00000064074993, 90.00000223517418)
-            Converted["_Title"].TextSize = 16
-            Converted["_Title"].TextTruncate = Enum.TextTruncate.AtEnd
-            Converted["_Title"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_Title"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title"].BackgroundTransparency = 1
-            Converted["_Title"].Position = UDim2.new(0.5, 0, 0.5, 0)
-            Converted["_Title"].Size = UDim2.new(1, -150, 0.5, 0)
-            Converted["_Title"].Name = "Title"
-            Converted["_Title"].Parent = Converted["_Top1"]
-
-            Converted["_UISizeConstraint"].Parent = Converted["_Title"]
-
-            Converted["_Theme5"].Value = "TextColor3"
-            Converted["_Theme5"].Name = "Theme"
-            Converted["_Theme5"].Parent = Converted["_Title"]
-
-            Converted["_Category5"].Value = "Main"
-            Converted["_Category5"].Name = "Category"
-            Converted["_Category5"].Parent = Converted["_Theme5"]
-
-            Converted["_Ignore5"].Name = "Ignore"
-            Converted["_Ignore5"].Parent = Converted["_Theme5"]
-
-            Converted["_Info"].Image = "http://www.roblox.com/asset/?id=10954638982"
-            Converted["_Info"].ImageColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Info"].AnchorPoint = Vector2.new(1, 0.5)
-            Converted["_Info"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Info"].BackgroundTransparency = 1
-            Converted["_Info"].Position = UDim2.new(0, 60, 0.5, 0)
-            Converted["_Info"].Size = UDim2.new(0, 22, 0, 20)
-            Converted["_Info"].Name = "Info"
-            Converted["_Info"].Parent = Converted["_Top1"]
-
-            Converted["_UIAspectRatioConstraint2"].AspectType = Enum.AspectType.ScaleWithParentSize
-            Converted["_UIAspectRatioConstraint2"].DominantAxis = Enum.DominantAxis.Height
-            Converted["_UIAspectRatioConstraint2"].Parent = Converted["_Info"]
-
-            Converted["_Credits"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Credits"].BackgroundTransparency = 1
-            Converted["_Credits"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_Credits"].Visible = false
-            Converted["_Credits"].Name = "Credits"
-            Converted["_Credits"].Parent = Converted["_Info"]
-
-            Converted["_Main1"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_Main1"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Main1"].BackgroundColor3 = Color3.fromRGB(31.000000052154064, 31.000000052154064, 31.000000052154064)
-            Converted["_Main1"].Position = UDim2.new(0.5, 0, -2.25, 0)
-            Converted["_Main1"].Size = UDim2.new(0, 1, 2.5, 0)
-            Converted["_Main1"].ZIndex = 70
-            Converted["_Main1"].Name = "Main"
-            Converted["_Main1"].Parent = Converted["_Credits"]
-
-            Converted["_UICorner1"].CornerRadius = UDim.new(0, 6)
-            Converted["_UICorner1"].Parent = Converted["_Main1"]
-
-            Converted["_UIListLayout"].Padding = UDim.new(0, 4)
-            Converted["_UIListLayout"].FillDirection = Enum.FillDirection.Horizontal
-            Converted["_UIListLayout"].HorizontalAlignment = Enum.HorizontalAlignment.Center
-            Converted["_UIListLayout"].Parent = Converted["_Main1"]
-
-            Converted["_Frame"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Frame"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Frame"].BackgroundTransparency = 1
-            Converted["_Frame"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Frame"].Parent = Converted["_Main1"]
-
-            Converted["_B"].Font = Enum.Font.Gotham
-            Converted["_B"].Text = "Atlas UI Lib: RoadToGlory#9879" -- please don't remove this, this is open sourced and I leave this here so that users can know the name of the UI library if they are interested in it
-            Converted["_B"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_B"].TextSize = 12
-            Converted["_B"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_B"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_B"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_B"].BackgroundTransparency = 1
-            Converted["_B"].Position = UDim2.new(0.5, 0, 0.699999988, 0)
-            Converted["_B"].Size = UDim2.new(0, 1, 0.300000012, 0)
-            Converted["_B"].Name = "B"
-            Converted["_B"].Parent = Converted["_Frame"]
-
-            Converted["_A"].Font = Enum.Font.Gotham
-            Converted["_A"].Text = "AWP: RoadToGlory#9879"
-            Converted["_A"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_A"].TextSize = 12
-            Converted["_A"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_A"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_A"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_A"].BackgroundTransparency = 1
-            Converted["_A"].Position = UDim2.new(0.5, 0, 0.300000012, 0)
-            Converted["_A"].Size = UDim2.new(0, 1, 0.300000012, 0)
-            Converted["_A"].Name = "A"
-            Converted["_A"].Parent = Converted["_Frame"]
-
-            Converted["_UIListLayout1"].HorizontalAlignment = Enum.HorizontalAlignment.Center
-            Converted["_UIListLayout1"].VerticalAlignment = Enum.VerticalAlignment.Center
-            Converted["_UIListLayout1"].Parent = Converted["_Frame"]
-
-            Converted["_padding"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_padding"].BackgroundTransparency = 1
-            Converted["_padding"].Name = "padding"
-            Converted["_padding"].Parent = Converted["_Main1"]
-
-            Converted["_0_padding"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_0_padding"].BackgroundTransparency = 1
-            Converted["_0_padding"].Name = "0_padding"
-            Converted["_0_padding"].Parent = Converted["_Main1"]
-
-            Converted["_Arrow"].Image = "http://www.roblox.com/asset/?id=10955007577"
-            Converted["_Arrow"].ImageColor3 = Color3.fromRGB(31.000000052154064, 31.000000052154064, 31.000000052154064)
-            Converted["_Arrow"].AnchorPoint = Vector2.new(0.5, 0)
-            Converted["_Arrow"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Arrow"].BackgroundTransparency = 1
-            Converted["_Arrow"].Position = UDim2.new(0.5, 0, -1, 0)
-            Converted["_Arrow"].Rotation = 180
-            Converted["_Arrow"].Size = UDim2.new(0, 10, 0, 10)
-            Converted["_Arrow"].Name = "Arrow"
-            Converted["_Arrow"].Parent = Converted["_Credits"]
-
-            Converted["_Theme6"].Value = "ImageColor3"
-            Converted["_Theme6"].Name = "Theme"
-            Converted["_Theme6"].Parent = Converted["_Info"]
-
-            Converted["_Category6"].Value = "Symbols"
-            Converted["_Category6"].Name = "Category"
-            Converted["_Category6"].Parent = Converted["_Theme6"]
-
-            Converted["_Ignore6"].Name = "Ignore"
-            Converted["_Ignore6"].Parent = Converted["_Theme6"]
-
-            Converted["_Search"].Image = "http://www.roblox.com/asset/?id=10954646243"
-            Converted["_Search"].ImageColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Search"].AnchorPoint = Vector2.new(1, 0.5)
-            Converted["_Search"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Search"].BackgroundTransparency = 1
-            Converted["_Search"].Position = UDim2.new(1, -32, 0.5, 0)
-            Converted["_Search"].Size = UDim2.new(0, 22, 0, 21)
-            Converted["_Search"].Name = "Search"
-            Converted["_Search"].Parent = Converted["_Top1"]
-
-            Converted["_UIAspectRatioConstraint3"].AspectType = Enum.AspectType.ScaleWithParentSize
-            Converted["_UIAspectRatioConstraint3"].DominantAxis = Enum.DominantAxis.Height
-            Converted["_UIAspectRatioConstraint3"].Parent = Converted["_Search"]
-
-            Converted["_Theme7"].Value = "ImageColor3"
-            Converted["_Theme7"].Name = "Theme"
-            Converted["_Theme7"].Parent = Converted["_Search"]
-
-            Converted["_Category7"].Value = "Symbols"
-            Converted["_Category7"].Name = "Category"
-            Converted["_Category7"].Parent = Converted["_Theme7"]
-
-            Converted["_Ignore7"].Name = "Ignore"
-            Converted["_Ignore7"].Parent = Converted["_Theme7"]
-
-            Converted["_SearchBar"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_SearchBar"].BackgroundColor3 = Color3.fromRGB(18.000000827014446, 18.000000827014446, 18.000000827014446)
-            Converted["_SearchBar"].Position = UDim2.new(0.5, 0, 0.5, 0)
-            Converted["_SearchBar"].Size = UDim2.new(0.328999996, 0, 0, 21)
-            Converted["_SearchBar"].Visible = false
-            Converted["_SearchBar"].Name = "SearchBar"
-            Converted["_SearchBar"].Parent = Converted["_Top1"]
-
-            Converted["_UICorner2"].Parent = Converted["_SearchBar"]
-
-            Converted["_Icon"].Image = "http://www.roblox.com/asset/?id=10954646243"
-            Converted["_Icon"].ImageColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Icon"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Icon"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Icon"].BackgroundTransparency = 1
-            Converted["_Icon"].Position = UDim2.new(0, 3, 0.5, 0)
-            Converted["_Icon"].Size = UDim2.new(0, 17, 0, 17)
-            Converted["_Icon"].Name = "Icon"
-            Converted["_Icon"].Parent = Converted["_SearchBar"]
-
-            Converted["_Theme8"].Value = "ImageColor3"
-            Converted["_Theme8"].Name = "Theme"
-            Converted["_Theme8"].Parent = Converted["_Icon"]
-
-            Converted["_Category8"].Value = "Symbols"
-            Converted["_Category8"].Name = "Category"
-            Converted["_Category8"].Parent = Converted["_Theme8"]
-
-            Converted["_Ignore8"].Name = "Ignore"
-            Converted["_Ignore8"].Parent = Converted["_Theme8"]
-
-            Converted["_TextBox"].Font = Enum.Font.Gotham
-            Converted["_TextBox"].PlaceholderColor3 = Color3.fromRGB(165.00000536441803, 165.00000536441803, 165.00000536441803)
-            Converted["_TextBox"].PlaceholderText = "search"
-            Converted["_TextBox"].Text = ""
-            Converted["_TextBox"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_TextBox"].TextSize = 13
-            Converted["_TextBox"].TextTruncate = Enum.TextTruncate.AtEnd
-            Converted["_TextBox"].AnchorPoint = Vector2.new(0.5, 0)
-            Converted["_TextBox"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_TextBox"].BackgroundTransparency = 1
-            Converted["_TextBox"].Position = UDim2.new(0.5, 0, 0, 0)
-            Converted["_TextBox"].Size = UDim2.new(1, -34, 1, 0)
-            Converted["_TextBox"].Parent = Converted["_SearchBar"]
-
-            Converted["_Theme9"].Value = "PlaceholderColor3"
-            Converted["_Theme9"].Name = "Theme"
-            Converted["_Theme9"].Parent = Converted["_TextBox"]
-
-            Converted["_Category9"].Value = "Section"
-            Converted["_Category9"].Name = "Category"
-            Converted["_Category9"].Parent = Converted["_Theme9"]
-
-            Converted["_Ignore9"].Name = "Ignore"
-            Converted["_Ignore9"].Parent = Converted["_Theme9"]
-
-            Converted["_Theme10"].Value = "TextColor3"
-            Converted["_Theme10"].Name = "Theme"
-            Converted["_Theme10"].Parent = Converted["_TextBox"]
-
-            Converted["_Category10"].Value = "Symbols"
-            Converted["_Category10"].Name = "Category"
-            Converted["_Category10"].Parent = Converted["_Theme10"]
-
-            Converted["_Ignore10"].Name = "Ignore"
-            Converted["_Ignore10"].Parent = Converted["_Theme10"]
-
-            Converted["_Theme11"].Value = "BackgroundColor3"
-            Converted["_Theme11"].Name = "Theme"
-            Converted["_Theme11"].Parent = Converted["_SearchBar"]
-
-            Converted["_Category11"].Value = "Background"
-            Converted["_Category11"].Name = "Category"
-            Converted["_Category11"].Parent = Converted["_Theme11"]
-
-            Converted["_Ignore11"].Name = "Ignore"
-            Converted["_Ignore11"].Parent = Converted["_Theme11"]
-
-            Converted["_Drag"].Font = Enum.Font.SourceSans
-            Converted["_Drag"].Text = ""
-            Converted["_Drag"].TextColor3 = Color3.fromRGB(0, 0, 0)
-            Converted["_Drag"].TextSize = 14
-            Converted["_Drag"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Drag"].BackgroundTransparency = 1
-            Converted["_Drag"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_Drag"].ZIndex = 0
-            Converted["_Drag"].Name = "Drag"
-            Converted["_Drag"].Parent = Converted["_Top1"]
-
-            Converted["_Theme12"].Image = "http://www.roblox.com/asset/?id=10983705188"
-            Converted["_Theme12"].ImageColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Theme12"].AnchorPoint = Vector2.new(1, 0.5)
-            Converted["_Theme12"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Theme12"].BackgroundTransparency = 1
-            Converted["_Theme12"].Position = UDim2.new(1, -59, 0.5, 0)
-            Converted["_Theme12"].Size = UDim2.new(0, 22, 0, 21)
-            Converted["_Theme12"].Visible = false
-            Converted["_Theme12"].Name = "Theme"
-            Converted["_Theme12"].Parent = Converted["_Top1"]
-
-            Converted["_UIAspectRatioConstraint4"].AspectType = Enum.AspectType.ScaleWithParentSize
-            Converted["_UIAspectRatioConstraint4"].DominantAxis = Enum.DominantAxis.Height
-            Converted["_UIAspectRatioConstraint4"].Parent = Converted["_Theme12"]
-
-            Converted["_Theme13"].Value = "ImageColor3"
-            Converted["_Theme13"].Name = "Theme"
-            Converted["_Theme13"].Parent = Converted["_Theme12"]
-
-            Converted["_Category12"].Value = "Symbols"
-            Converted["_Category12"].Name = "Category"
-            Converted["_Category12"].Parent = Converted["_Theme13"]
-
-            Converted["_Ignore12"].Name = "Ignore"
-            Converted["_Ignore12"].Parent = Converted["_Theme13"]
-
-            Converted["_Background"].BackgroundColor3 = Color3.fromRGB(18.000000827014446, 18.000000827014446, 18.000000827014446)
-            Converted["_Background"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_Background"].Name = "Background"
-            Converted["_Background"].Parent = Converted["_Contents"]
-
-            Converted["_UICorner3"].CornerRadius = UDim.new(0, 7)
-            Converted["_UICorner3"].Parent = Converted["_Background"]
-
-            Converted["_Theme14"].Value = "BackgroundColor3"
-            Converted["_Theme14"].Name = "Theme"
-            Converted["_Theme14"].Parent = Converted["_Background"]
-
-            Converted["_Category13"].Value = "Background"
-            Converted["_Category13"].Name = "Category"
-            Converted["_Category13"].Parent = Converted["_Theme14"]
-
-            Converted["_Ignore13"].Name = "Ignore"
-            Converted["_Ignore13"].Parent = Converted["_Theme14"]
-
-            Converted["_Pages"].BackgroundColor3 = Color3.fromRGB(37.00000159442425, 37.00000159442425, 37.00000159442425)
-            Converted["_Pages"].Size = UDim2.new(0, 0, 1, 0)
-            Converted["_Pages"].Visible = true
-            Converted["_Pages"].ZIndex = 80
-            Converted["_Pages"].Name = "Pages"
-            Converted["_Pages"].Parent = Converted["_Contents"]
-
-            Converted["_UICorner4"].CornerRadius = UDim.new(0, 7)
-            Converted["_UICorner4"].Parent = Converted["_Pages"]
-
-            Converted["_Close1"].Image = "http://www.roblox.com/asset/?id=10259890025"
-            Converted["_Close1"].ImageColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Close1"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Close1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Close1"].BackgroundTransparency = 1
-            Converted["_Close1"].Position = UDim2.new(0, 5, 0, 16)
-            Converted["_Close1"].Size = UDim2.new(0, 22, 0, 22)
-            Converted["_Close1"].Name = "Close"
-            Converted["_Close1"].Parent = Converted["_Pages"]
-
-            Converted["_UIAspectRatioConstraint5"].AspectType = Enum.AspectType.ScaleWithParentSize
-            Converted["_UIAspectRatioConstraint5"].DominantAxis = Enum.DominantAxis.Height
-            Converted["_UIAspectRatioConstraint5"].Parent = Converted["_Close1"]
-
-            Converted["_Theme15"].Value = "ImageColor3"
-            Converted["_Theme15"].Name = "Theme"
-            Converted["_Theme15"].Parent = Converted["_Close1"]
-
-            Converted["_Category14"].Value = "Symbols"
-            Converted["_Category14"].Name = "Category"
-            Converted["_Category14"].Parent = Converted["_Theme15"]
-
-            Converted["_Ignore14"].Name = "Ignore"
-            Converted["_Ignore14"].Parent = Converted["_Theme15"]
-
-            Converted["_Line1"].BackgroundColor3 = Color3.fromRGB(65.0000037252903, 65.0000037252903, 65.0000037252903)
-            Converted["_Line1"].BorderSizePixel = 0
-            Converted["_Line1"].Position = UDim2.new(0, 0, 0, 32)
-            Converted["_Line1"].Size = UDim2.new(1, 0, 0, 1)
-            Converted["_Line1"].ZIndex = 29
-            Converted["_Line1"].Name = "Line"
-            Converted["_Line1"].Parent = Converted["_Pages"]
-
-            Converted["_Theme16"].Value = "BackgroundColor3"
-            Converted["_Theme16"].Name = "Theme"
-            Converted["_Theme16"].Parent = Converted["_Line1"]
-
-            Converted["_Category15"].Value = "SidebarSeperator"
-            Converted["_Category15"].Name = "Category"
-            Converted["_Category15"].Parent = Converted["_Theme16"]
-
-            Converted["_Ignore15"].Name = "Ignore"
-            Converted["_Ignore15"].Parent = Converted["_Theme16"]
-
-            Converted["_ScrollingFrame"].AutomaticCanvasSize = Enum.AutomaticSize.Y
-            Converted["_ScrollingFrame"].CanvasSize = UDim2.new(0, 0, 1, 0)
-            Converted["_ScrollingFrame"].ScrollBarImageColor3 = Color3.fromRGB(0, 0, 0)
-            Converted["_ScrollingFrame"].ScrollBarThickness = 0
-            Converted["_ScrollingFrame"].Active = true
-            Converted["_ScrollingFrame"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_ScrollingFrame"].BackgroundTransparency = 1
-            Converted["_ScrollingFrame"].Position = UDim2.new(0, 9, 0, 39)
-            Converted["_ScrollingFrame"].Size = UDim2.new(0.88554424, 0, 0.985523105, -40)
-            Converted["_ScrollingFrame"].Parent = Converted["_Pages"]
-
-            Converted["_UIListLayout2"].Parent = Converted["_ScrollingFrame"]
-
-            Converted["_Theme17"].Value = "BackgroundColor3"
-            Converted["_Theme17"].Name = "Theme"
-            Converted["_Theme17"].Parent = Converted["_Pages"]
-
-            Converted["_Category16"].Value = "Sidebar"
-            Converted["_Category16"].Name = "Category"
-            Converted["_Category16"].Parent = Converted["_Theme17"]
-
-            Converted["_Ignore16"].Name = "Ignore"
-            Converted["_Ignore16"].Parent = Converted["_Theme17"]
-
-            Converted["_Contents1"].AnchorPoint = Vector2.new(1, 1)
-            Converted["_Contents1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Contents1"].BackgroundTransparency = 1
-            Converted["_Contents1"].Position = UDim2.new(1, 0, 1, 0)
-            Converted["_Contents1"].Size = UDim2.new(1, 0, 1, -32)
-            Converted["_Contents1"].ZIndex = 50
-            Converted["_Contents1"].Name = "Contents"
-            Converted["_Contents1"].Parent = Converted["_Contents"]
-
-            Converted["_Page"].AnchorPoint = Vector2.new(1, 0.5)
-            Converted["_Page"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Page"].BackgroundTransparency = 1
-            Converted["_Page"].Position = UDim2.new(1, -3, 0.5, 0)
-            Converted["_Page"].Size = UDim2.new(1, -9, 1, -12)
-            Converted["_Page"].Name = "Page"
-            Converted["_Page"].Parent = Converted["_Contents1"]
-
-            Converted["_ScrollingFrame1"].AutomaticCanvasSize = Enum.AutomaticSize.Y
-            Converted["_ScrollingFrame1"].CanvasSize = UDim2.new(0, 0, 1, 0)
-            Converted["_ScrollingFrame1"].ScrollBarImageColor3 = Color3.fromRGB(151.00000619888306, 151.00000619888306, 151.00000619888306)
-            Converted["_ScrollingFrame1"].ScrollBarImageTransparency = 0.20000000298023224
-            Converted["_ScrollingFrame1"].ScrollBarThickness = 5
-            Converted["_ScrollingFrame1"].Active = true
-            Converted["_ScrollingFrame1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_ScrollingFrame1"].BackgroundTransparency = 1
-            Converted["_ScrollingFrame1"].BorderSizePixel = 0
-            Converted["_ScrollingFrame1"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_ScrollingFrame1"].Parent = Converted["_Page"]
-
-            Converted["_UIListLayout3"].Padding = UDim.new(0, 8)
-            Converted["_UIListLayout3"].HorizontalAlignment = Enum.HorizontalAlignment.Center
-            Converted["_UIListLayout3"].Parent = Converted["_ScrollingFrame1"]
-
-            Converted["_padding1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_padding1"].BackgroundTransparency = 1
-            Converted["_padding1"].Size = UDim2.new(1, 0, 0, 0)
-            Converted["_padding1"].Name = "padding"
-            Converted["_padding1"].Parent = Converted["_ScrollingFrame1"]
-
-            Converted["_0_padding1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_0_padding1"].BackgroundTransparency = 1
-            Converted["_0_padding1"].Size = UDim2.new(1, 0, 0, 0)
-            Converted["_0_padding1"].Name = "0_padding"
-            Converted["_0_padding1"].Parent = Converted["_ScrollingFrame1"]
-
-            Converted["_Theme18"].Value = "ScrollBarImageColor3"
-            Converted["_Theme18"].Name = "Theme"
-            Converted["_Theme18"].Parent = Converted["_ScrollingFrame1"]
-
-            Converted["_Category17"].Value = "Scrollbar"
-            Converted["_Category17"].Name = "Category"
-            Converted["_Category17"].Parent = Converted["_Theme18"]
-
-            Converted["_Ignore17"].Name = "Ignore"
-            Converted["_Ignore17"].Parent = Converted["_Theme18"]
-
-            Converted["_Shadow"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_Shadow"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Shadow"].BackgroundTransparency = 1
-            Converted["_Shadow"].Position = UDim2.new(0.5, 0, 0.506053269, 0)
-            Converted["_Shadow"].Size = UDim2.new(1, 55, 1.01210654, 55)
-            Converted["_Shadow"].ZIndex = 0
-            Converted["_Shadow"].Name = "Shadow"
-            Converted["_Shadow"].Parent = Converted["_Main"]
-
-            Converted["_ImageLabel"].Image = "rbxassetid://10955010523"
-            Converted["_ImageLabel"].ImageColor3 = Color3.fromRGB(0, 0, 0)
-            Converted["_ImageLabel"].ImageTransparency = 0.5
-            Converted["_ImageLabel"].ScaleType = Enum.ScaleType.Slice
-            Converted["_ImageLabel"].SliceCenter = Rect.new(60, 60, 360, 360)
-            Converted["_ImageLabel"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_ImageLabel"].BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-            Converted["_ImageLabel"].BackgroundTransparency = 1
-            Converted["_ImageLabel"].Position = UDim2.new(0.5, 0, 0.5, 0)
-            Converted["_ImageLabel"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_ImageLabel"].ZIndex = 0
-            Converted["_ImageLabel"].Parent = Converted["_Shadow"]
-
-            Converted["_Theme19"].Value = "ImageColor3"
-            Converted["_Theme19"].Name = "Theme"
-            Converted["_Theme19"].Parent = Converted["_ImageLabel"]
-
-            Converted["_Category18"].Value = "Shadow"
-            Converted["_Category18"].Name = "Category"
-            Converted["_Category18"].Parent = Converted["_Theme19"]
-
-            Converted["_Ignore18"].Name = "Ignore"
-            Converted["_Ignore18"].Parent = Converted["_Theme19"]
-
-            Converted["_Resize"].AnchorPoint = Vector2.new(1, 1)
-            Converted["_Resize"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Resize"].BackgroundTransparency = 1
-            Converted["_Resize"].Position = UDim2.new(1, -4, 1, -4)
-            Converted["_Resize"].Size = UDim2.new(0, 10, 0, 10)
-            Converted["_Resize"].Visible = false
-            Converted["_Resize"].ZIndex = 20
-            Converted["_Resize"].Name = "Resize"
-            Converted["_Resize"].Parent = Converted["_Main"]
-
-            Converted["_Frame1"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_Frame1"].BackgroundColor3 = Color3.fromRGB(143.00000667572021, 143.00000667572021, 143.00000667572021)
-            Converted["_Frame1"].Position = UDim2.new(0.5, 0, 0.5, 0)
-            Converted["_Frame1"].Rotation = -45
-            Converted["_Frame1"].Size = UDim2.new(1, 0, 0.100000001, 0)
-            Converted["_Frame1"].Parent = Converted["_Resize"]
-
-            Converted["_Frame2"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_Frame2"].BackgroundColor3 = Color3.fromRGB(143.00000667572021, 143.00000667572021, 143.00000667572021)
-            Converted["_Frame2"].Position = UDim2.new(0.800000012, 0, 0.800000012, 0)
-            Converted["_Frame2"].Rotation = -45
-            Converted["_Frame2"].Size = UDim2.new(0.400000006, 0, 0.100000001, 0)
-            Converted["_Frame2"].Parent = Converted["_Resize"]
-
-            Converted["_ResizeArea"].Font = Enum.Font.SourceSans
-            Converted["_ResizeArea"].Text = ""
-            Converted["_ResizeArea"].TextColor3 = Color3.fromRGB(0, 0, 0)
-            Converted["_ResizeArea"].TextSize = 14
-            Converted["_ResizeArea"].AnchorPoint = Vector2.new(1, 1)
-            Converted["_ResizeArea"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_ResizeArea"].BackgroundTransparency = 1
-            Converted["_ResizeArea"].Position = UDim2.new(1, 2, 1, 2)
-            Converted["_ResizeArea"].Size = UDim2.new(0, 18, 0, 18)
-            Converted["_ResizeArea"].Name = "ResizeArea"
-            Converted["_ResizeArea"].Parent = Converted["_Main"]
-
-            Converted["_Modal"].Font = Enum.Font.SourceSans
-            Converted["_Modal"].Text = ""
-            Converted["_Modal"].TextColor3 = Color3.fromRGB(0, 0, 0)
-            Converted["_Modal"].TextSize = 14
-            Converted["_Modal"].TextTransparency = 1
-            Converted["_Modal"].Modal = true
-            Converted["_Modal"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Modal"].BackgroundTransparency = 1
-            Converted["_Modal"].Name = "Modal"
-            Converted["_Modal"].Parent = Converted["_Main"]
-
-            Converted["_Notifications"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Notifications"].BackgroundTransparency = 1
-            Converted["_Notifications"].Position = UDim2.new(0, 40, 0, 0)
-            Converted["_Notifications"].Size = UDim2.new(0, 260, 1, -20)
-            Converted["_Notifications"].ZIndex = 200
-            Converted["_Notifications"].Name = "Notifications"
-            Converted["_Notifications"].Parent = Converted["_Atlas"]
-
-            Converted["_UIListLayout4"].Padding = UDim.new(0, 10)
-            Converted["_UIListLayout4"].HorizontalAlignment = Enum.HorizontalAlignment.Center
-            Converted["_UIListLayout4"].VerticalAlignment = Enum.VerticalAlignment.Bottom
-            Converted["_UIListLayout4"].Parent = Converted["_Notifications"]
-
-            Converted["_Hint"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Hint"].BackgroundTransparency = 1
-            Converted["_Hint"].Position = UDim2.new(0.5, 0, 0.5, 0)
-            Converted["_Hint"].Size = UDim2.new(0, 10, 0, 10)
-            Converted["_Hint"].Visible = false
-            Converted["_Hint"].ZIndex = 300
-            Converted["_Hint"].Name = "Hint"
-            Converted["_Hint"].Parent = Converted["_Atlas"]
-
-            Converted["_Arrow1"].Image = "http://www.roblox.com/asset/?id=10955007577"
-            Converted["_Arrow1"].ImageColor3 = Color3.fromRGB(21.000000648200512, 21.000000648200512, 21.000000648200512)
-            Converted["_Arrow1"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_Arrow1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Arrow1"].BackgroundTransparency = 1
-            Converted["_Arrow1"].Position = UDim2.new(0.5, 0, 0.5, 0)
-            Converted["_Arrow1"].Rotation = 180
-            Converted["_Arrow1"].Size = UDim2.new(0, 10, 0, 10)
-            Converted["_Arrow1"].Name = "Arrow"
-            Converted["_Arrow1"].Parent = Converted["_Hint"]
-
-            Converted["_Theme20"].Value = "ImageColor3"
-            Converted["_Theme20"].Name = "Theme"
-            Converted["_Theme20"].Parent = Converted["_Arrow1"]
-
-            Converted["_Category19"].Value = "Hint"
-            Converted["_Category19"].Name = "Category"
-            Converted["_Category19"].Parent = Converted["_Theme20"]
-
-            Converted["_Ignore19"].Name = "Ignore"
-            Converted["_Ignore19"].Parent = Converted["_Theme20"]
-
-            Converted["_Main2"].AnchorPoint = Vector2.new(0.5, 1)
-            Converted["_Main2"].BackgroundColor3 = Color3.fromRGB(21.000000648200512, 21.000000648200512, 21.000000648200512)
-            Converted["_Main2"].BackgroundTransparency = 1
-            Converted["_Main2"].Position = UDim2.new(0.5, 0, 0, 0)
-            Converted["_Main2"].Size = UDim2.new(0, 10, 0, 10)
-            Converted["_Main2"].ZIndex = 70
-            Converted["_Main2"].Name = "Main"
-            Converted["_Main2"].Parent = Converted["_Hint"]
-
-            Converted["_Main3"].AnchorPoint = Vector2.new(0.5, 1)
-            Converted["_Main3"].AutomaticSize = Enum.AutomaticSize.XY
-            Converted["_Main3"].BackgroundColor3 = Color3.fromRGB(21.000000648200512, 21.000000648200512, 21.000000648200512)
-            Converted["_Main3"].Position = UDim2.new(0.5, 0, 1, 0)
-            Converted["_Main3"].Size = UDim2.new(0, 1, 0, 1)
-            Converted["_Main3"].ZIndex = 70
-            Converted["_Main3"].Name = "Main"
-            Converted["_Main3"].Parent = Converted["_Main2"]
-
-            Converted["_UICorner5"].CornerRadius = UDim.new(0, 6)
-            Converted["_UICorner5"].Parent = Converted["_Main3"]
-
-            Converted["_UIListLayout5"].Padding = UDim.new(0, 7)
-            Converted["_UIListLayout5"].FillDirection = Enum.FillDirection.Horizontal
-            Converted["_UIListLayout5"].HorizontalAlignment = Enum.HorizontalAlignment.Center
-            Converted["_UIListLayout5"].Parent = Converted["_Main3"]
-
-            Converted["_Frame3"].AutomaticSize = Enum.AutomaticSize.XY
-            Converted["_Frame3"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Frame3"].BackgroundTransparency = 1
-            Converted["_Frame3"].Size = UDim2.new(0, 1, 0, 1)
-            Converted["_Frame3"].Parent = Converted["_Main3"]
-
-            Converted["_UIListLayout6"].FillDirection = Enum.FillDirection.Horizontal
-            Converted["_UIListLayout6"].HorizontalAlignment = Enum.HorizontalAlignment.Center
-            Converted["_UIListLayout6"].Parent = Converted["_Frame3"]
-
-            Converted["_0_padding2"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_0_padding2"].BackgroundTransparency = 1
-            Converted["_0_padding2"].Name = "0_padding"
-            Converted["_0_padding2"].Parent = Converted["_Frame3"]
-
-            Converted["_1_main"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_1_main"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_1_main"].BackgroundTransparency = 1
-            Converted["_1_main"].Size = UDim2.new(0, 1, 0, 1)
-            Converted["_1_main"].Name = "1_main"
-            Converted["_1_main"].Parent = Converted["_Frame3"]
-
-            Converted["_Text"].Font = Enum.Font.Gotham
-            Converted["_Text"].RichText = true
-            Converted["_Text"].Text = "This feature is currently not functional."
-            Converted["_Text"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Text"].TextSize = 14
-            Converted["_Text"].AutomaticSize = Enum.AutomaticSize.XY
-            Converted["_Text"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Text"].BackgroundTransparency = 1
-            Converted["_Text"].Size = UDim2.new(0, 1, 0, 1)
-            Converted["_Text"].SizeConstraint = Enum.SizeConstraint.RelativeYY
-            Converted["_Text"].Name = "Text"
-            Converted["_Text"].Parent = Converted["_1_main"]
-
-            Converted["_0_padding3"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_0_padding3"].BackgroundTransparency = 1
-            Converted["_0_padding3"].Name = "0_padding"
-            Converted["_0_padding3"].Parent = Converted["_1_main"]
-
-            Converted["_padding2"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_padding2"].BackgroundTransparency = 1
-            Converted["_padding2"].Name = "padding"
-            Converted["_padding2"].Parent = Converted["_1_main"]
-
-            Converted["_UIListLayout7"].Padding = UDim.new(0, 5)
-            Converted["_UIListLayout7"].HorizontalAlignment = Enum.HorizontalAlignment.Center
-            Converted["_UIListLayout7"].Parent = Converted["_1_main"]
-
-            Converted["_2_padding"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_2_padding"].BackgroundTransparency = 1
-            Converted["_2_padding"].Name = "2_padding"
-            Converted["_2_padding"].Parent = Converted["_Frame3"]
-
-            Converted["_padding3"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_padding3"].BackgroundTransparency = 1
-            Converted["_padding3"].Name = "padding"
-            Converted["_padding3"].Parent = Converted["_Main3"]
-
-            Converted["_0_padding4"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_0_padding4"].BackgroundTransparency = 1
-            Converted["_0_padding4"].Name = "0_padding"
-            Converted["_0_padding4"].Parent = Converted["_Main3"]
-
-            Converted["_UIStroke"].Color = Color3.fromRGB(165.00000536441803, 165.00000536441803, 165.00000536441803)
-            Converted["_UIStroke"].Parent = Converted["_Main3"]
-
-            Converted["_Theme21"].Value = "Color"
-            Converted["_Theme21"].Name = "Theme"
-            Converted["_Theme21"].Parent = Converted["_UIStroke"]
-
-            Converted["_Category20"].Value = "Section"
-            Converted["_Category20"].Name = "Category"
-            Converted["_Category20"].Parent = Converted["_Theme21"]
-
-            Converted["_Ignore20"].Name = "Ignore"
-            Converted["_Ignore20"].Parent = Converted["_Theme21"]
-
-            Converted["_Theme22"].Value = "BackgroundColor3"
-            Converted["_Theme22"].Name = "Theme"
-            Converted["_Theme22"].Parent = Converted["_Main2"]
-
-            Converted["_Category21"].Value = "Hint"
-            Converted["_Category21"].Name = "Category"
-            Converted["_Category21"].Parent = Converted["_Theme22"]
-
-            Converted["_Ignore21"].Name = "Ignore"
-            Converted["_Ignore21"].Parent = Converted["_Theme22"]
-
-            return Converted["_Atlas"]
-        end
-
-        local lib = makeLibrary()
-
-        local _connections = {}
-
-        pcall(function() -- laziness
-            lib.Main.Contents.Contents.Page:Destroy()
-        end)
-
-        -- Temporary
-        lib.Notifications.Visible = false
-        lib.Main.Visible = false
-        lib.Hint.Visible = false
-
-        local savedKey = nil
-        local flags = {}
-        local saveCoroutine
-        local configPath
-        local encodeFlags
-        local writeConfig
-
-        if info.ConfigFolder then
-            -- load data
-            local cf = info.ConfigFolder
-            configPath = cf.."/config.json"
-            if not isfolder(cf) then
-                makefolder(cf)
-            end
-            if not isfile(configPath) then
-                writefile(configPath,"")
-            end
-            if info.CheckKey then
-                local key = cf.."/key.txt"
-                if not isfile(key) then
-                    writefile(key,"")
-                end
-                savedKey = readfile(key)
-                if savedKey == "" then
-                    savedKey = nil
-                end
-            end
-            flags = readfile(configPath)=="" and {} or HttpService:JSONDecode(readfile(configPath))
-            for i,v in pairs(flags) do
-                if type(v)=="string" then
-                    if string.sub(v,1,9)=="?special|" then
-                        if string.find(v,"<$enum_type$>") then -- for enums
-                            local semiL,_ = string.find(v,";")
-                            local enumType = string.sub(v,24,semiL-1)
-                            local index = string.sub(v,semiL+15,-1)
-                            local finalEnum = Enum[enumType][index]
-                            flags[i] = finalEnum
-                        elseif string.find(v,"<$colorR$>") then
-                            local semiL1,_ = string.find(v,";")
-                            local semiL2,_ = string.find(v,";",semiL1+1)
-
-                            local r = string.sub(v,21,semiL1-1)
-                            local g = string.sub(v,semiL1+12,semiL2-1)
-                            local b = string.sub(v,semiL2+12,-1)
-
-                            flags[i] = Color3.new(tonumber(r),tonumber(g),tonumber(b))
-                        end
-                    end
-                end
-            end
-            encodeFlags = function()
-                local edited_flags = {}
-                for i,v in pairs(flags) do
-                    if typeof(v)=="EnumItem" then
-                        v = "?special|<$enum_type$>:"..tostring(v.EnumType)..";<$enum_item$>:"..v.Name
-                    elseif typeof(v)=="Color3" then
-                        v = "?special|<$colorR$>:"..v.R..";<$colorG$>:"..v.G..";<$colorB$>:"..v.B
-                    end
-                    edited_flags[i] = v
-                end
-                return edited_flags
-            end
-
-            writeConfig = function()
-                local edited_flags = encodeFlags()
-                local success, encoded = pcall(function()
-                    return HttpService:JSONEncode(edited_flags)
-                end)
-                if not success then
-                    warn("Failed to encode config: "..tostring(encoded))
-                    return false
-                end
-                writefile(configPath, encoded)
-                return true
-            end
-
-            if autoSave then
-                saveCoroutine = coroutine.create(function()
-                    LPH_JIT_MAX(function()
-                        while utility:Wait() do
-                            writeConfig()
-                            task.wait(0.5)
-                        end
-                    end)()
-                end)
-                coroutine.resume(saveCoroutine)
-            end
-        end
-
-        if info.UseLoader then
-            local loader = makeLoader()
-            loader.Parent = lib
-            loader.Visible = true
-            loader.Position = UDim2.new(1, 300, 1, -20)
-            loader.GameThumbnail.Image = "https://www.roblox.com/asset-thumbnail/image?assetId="..game.PlaceId.."&width=768&height=432&format=png"
-
-            local main = loader.Main
-            local key = loader.Key
-            local profile = loader.Profile
-
-            main.GameName.Text = GameName
-            main.Message.Text = "Script: "..info.FullName
-
-            local allGood = false
-            local chosen = false
-
-            table.insert(_connections,utility:HandleGradientButton(main.Yes,function()
-                if chosen then return else chosen = true end
-                local transition = TS:Create(main,TweenInfo.new(0.35,Enum.EasingStyle.Sine,Enum.EasingDirection.In,0,false,0),{
-                    ["Size"] = UDim2.new(0,0,1,0)
-                })
-                transition:Play()
-                transition.Completed:Wait()
-                local keyPath = info.ConfigFolder.."/key.txt"
-                local nextKey = info.CheckKey and not info.CheckKey(string.gsub(string.gsub(readfile(keyPath), "^%s+", ""), "%s+$", ""))
-                local nextObj = nextKey and key or profile
-                nextObj.Size = UDim2.fromScale(0,1)
-                nextObj.Visible = true
-                nextObj.AnchorPoint = Vector2.new(1,0)
-                nextObj.Position = UDim2.fromScale(1,0)
-                transition = TS:Create(nextObj,TweenInfo.new(0.35,Enum.EasingStyle.Sine,Enum.EasingDirection.In,0,false,0),{
-                    ["Size"] = UDim2.new(1,0,1,0)
-                })
-                if nextKey then
-                    transition:Play()
-                    local btn = key.Interact.Button
-                    local checkMark = btn.ImageLabel
-                    local text = btn.TextLabel
-                    checkMark.Visible = false
-                    text.Text = "Copy Invite"
-                    table.insert(_connections,utility:HandleGradientButton(btn,function()
-                        if text.Text == "Copy Invite" then
-                            text.Text = "Copied"
-                            checkMark.Visible = true
-                            setclipboard(info.Discord or "No discord invite")
-                            wait(1.5)
-                            text.Text = "Copy Invite"
-                            checkMark.Visible = false
-                        end
-                    end))
-
-                    local textBox = key.Input.TextBox
-                    local check = utility:CreateButtonObject(key.Input.ImageLabel)
-
-                    local checking = false
-
-                    local function doChecks()
-                        if checking then return else checking = true end
-                        local formatted = string.gsub(string.gsub(textBox.Text, "^%s+", ""), "%s+$", "")
-                        local result = nil
-                        pcall(function()
-                            result = info.CheckKey(formatted)
-                        end)
-                        if result then
-                            writefile(keyPath,formatted)
-                            profile.Size = UDim2.fromScale(0,1)
-                            profile.Visible = true
-                            profile.AnchorPoint = Vector2.new(1,0)
-                            profile.Position = UDim2.fromScale(1,0)
-                            transition = TS:Create(profile,TweenInfo.new(0.35,Enum.EasingStyle.Sine,Enum.EasingDirection.In,0,false,0),{
-                                ["Size"] = UDim2.new(1,0,1,0)
-                            })
-                            local thisTransition = TS:Create(key,TweenInfo.new(0.35,Enum.EasingStyle.Sine,Enum.EasingDirection.In,0,false,0),{
-                                ["Size"] = UDim2.new(0,0,1,0)
-                            })
-                            thisTransition:Play()
-                            thisTransition.Completed:Wait()
-                            allGood = transition
-                            transition.Completed:Wait()
-                            nextObj.AnchorPoint = Vector2.new(0,0)
-                            nextObj.Position = UDim2.fromScale(0,0)
-                        else
-                            checking = false
-                        end
-                    end
-
-                    check.Activated:Connect(doChecks)
-                    textBox.FocusLost:Connect(function(enterPressed)
-                        if enterPressed then
-                            doChecks()
-                        end
-                    end)
-                else
-                    allGood = transition
-                end
-                transition.Completed:Wait()
-                nextObj.AnchorPoint = Vector2.new(0,0)
-                nextObj.Position = UDim2.fromScale(0,0)
-            end))
-            table.insert(_connections,utility:HandleGradientButton(main.No,function()
-                if chosen then return else chosen = true end
-                local t = TS:Create(loader,TweenInfo.new(0.3,Enum.EasingStyle.Sine,Enum.EasingDirection.In,0,false,0),{
-                    ["Position"] = UDim2.new(1, 300, 1, -20)
-                })
-                t:Play()
-                t.Completed:Wait()
-                lib:Destroy()
-                for _,v in pairs(_connections) do
-                    v:Disconnect()
-                end
-                wait(9e9)
-            end))
-
-            TS:Create(loader,TweenInfo.new(0.3,Enum.EasingStyle.Sine,Enum.EasingDirection.In,0,false,0),{
-                ["Position"] = UDim2.new(1, -20, 1, -20)
-            }):Play() -- loader in
-
-            while allGood == false do
-                utility:Wait()
-            end
-
-            profile.Player.Gradient.BackgroundColor3 = info.RankColor
-            profile.Player.Rank.TextLabel.Text = info.Rank
-
-            profile.Player.PlayerName.TextLabel.Text = player.Name
-
-            profile.Player.Thumbnail.Image = "rbxthumb://type=AvatarHeadShot&id="..player.UserId.."&w=420&h=420"
-
-            profile.Player.PlayerName.ImageLabel.Visible = info.RankIcon and true
-            profile.Player.PlayerName.ImageLabel.Image = info.RankIcon and "http://www.roblox.com/asset/?id="..info.RankIcon or ""
-
-            local closeBtn = utility:CreateButtonObject(profile.Close)
-
-            local closed = false
-
-            local function doClose()
-                if closed then return else closed = true end
-                local e = TS:Create(loader,TweenInfo.new(0.3,Enum.EasingStyle.Sine,Enum.EasingDirection.In,0,false,0),{
-                    ["Position"] = UDim2.new(1, 300, 1, -20)
-                }) -- loader in
-                e:Play()
-                e.Completed:Connect(function()
-                    pcall(function()
-                        loader:Destory()
-                    end)
-                end)
-            end
-
-            closeBtn.Activated:Connect(doClose)
-
-            allGood:Play()
-
-            coroutine.resume(coroutine.create(function()
-                task.wait(3.5)
-                doClose()
-            end))
-        end
-
-        -- Current page
-        local currentPage = Instance.new("IntValue")
-        currentPage.Name = "CurrentPage"
-        currentPage.Value = 1
-        currentPage.Parent = lib.Main
-
-        -- Dragging
-        local dragEvents = utility:InitDragging(lib.Main,lib.Main.Contents.Top.Drag)
-
-        -- Section update event
-        do
-            local contents = lib.Main.Contents.Contents
-            local categories = lib.Main.Contents.Pages.ScrollingFrame
-
-            local function refreshPages()
-                for _,v in pairs(categories:GetChildren()) do
-                    if v:IsA("Frame") then
-                        local pageNum = v:FindFirstChild("PageNum")
-                        if pageNum then
-                            local transparency = currentPage.Value==pageNum.Value and 0 or 1
-                            v.BackgroundTransparency = transparency
-                        end
-                    end
-                end
-                for _,v in pairs(contents:GetChildren()) do
-                    if v:IsA("Frame") then
-                        local pageNum = v:FindFirstChild("PageNum")
-                        if pageNum then
-                            v.Visible = currentPage.Value==pageNum.Value
-                        end
-                    end
-                end
-            end
-
-            refreshPages()
-
-            local trackedConnections = {
-                currentPage.Changed:Connect(refreshPages),
-                categories.ChildAdded:Connect(refreshPages),
-                categories.ChildRemoved:Connect(refreshPages),
-                contents.ChildAdded:Connect(refreshPages),
-                contents.ChildRemoved:Connect(refreshPages)
-            }
-
-            for _,connection in ipairs(trackedConnections) do
-                table.insert(_connections, connection)
-            end
-        end
-
-        local closePages do -- pages open and close
-            local openSize = UDim2.new(0, 150, 1, 0)
-            local closeSize = UDim2.new(0, 0, 1, 0)
-            
-            local open = lib.Main.Contents.Top.Menu
-            local close = lib.Main.Contents.Pages.Close
-
-            local openBtn = utility:CreateButtonObject(open)
-            local closeBtn = utility:CreateButtonObject(close)
-
-            local state = false
-
-            local pages = lib.Main.Contents.Pages
-            local contents = lib.Main.Contents.Contents
-
-            pages.Size = closeSize
-
-            local tweenInfo = TweenInfo.new(0.15,Enum.EasingStyle.Sine,Enum.EasingDirection.In,0,false,0)
-            local existing
-
-            local function startTween(s)
-                if existing then
-                    existing:Cancel()
-                    existing:Destroy()
-                end
-                existing = TS:Create(pages,tweenInfo,{
-                    ["Size"] = s;
-                })
-                existing:Play()
-            end
-
-            local function updatePagesSize()
-                local o = pages.Size.X.Offset
-                pages.Visible = o~=0
-                contents.Size = UDim2.new(1,-o,1,-32)
-            end
-
-            updatePagesSize()
-
-            local sizeChangedConnection = pages:GetPropertyChangedSignal("Size"):Connect(updatePagesSize)
-            table.insert(_connections,sizeChangedConnection)
-
-            openBtn.Activated:Connect(function()
-                if state == false then
-                    state = true
-                    startTween(openSize)
-                end
-            end)
-
-            closeBtn.Activated:Connect(function()
-                if state == true then
-                    state = false
-                    startTween(closeSize)
-                end
-            end)
-            function closePages()
-                if state == true then
-                    state = false
-                    startTween(closeSize)
-                end
-            end
-        end
-
-        do -- other buttons
-            local searchBtn = utility:CreateButtonObject(lib.Main.Contents.Top.Search)
-            local searchBar = lib.Main.Contents.Top.SearchBar
-
-            searchBtn.Activated:Connect(function()
-                searchBar.Visible = not searchBar.Visible
-                if not searchBar.Visible then
-                    searchBar.TextBox.Text = ""
-                end
-            end)
-
-            local infoButton = utility:CreateButtonObject(lib.Main.Contents.Top.Info)
-            local infoDialogue = lib.Main.Contents.Top.Info.Credits
-
-            infoButton.Activated:Connect(function()
-                infoDialogue.Visible = not infoDialogue.Visible
-            end)
-        end
-
-        do -- resize
-            local main = lib.Main
-            local resize = main.Resize
-            local button = main.ResizeArea
-
-            local isResizing = false
-            local offset = nil
-
-            --local tweenInfo = TweenInfo.new(0.1,Enum.EasingStyle.Sine,Enum.EasingDirection.In,0,false,0)
-
-            local p = resize:GetChildren()
-            local p1 = p[1]
-            local p2 = p[2]
-
-            local function setColor(c)
-                local r = Color3.fromRGB(c, c, c)
-                if p1.BackgroundColor3==r then
-                    return
-                end
-                for _,v in pairs(resize:GetChildren()) do
-                    p1.BackgroundColor3 = r
-                    p2.BackgroundColor3 = r
-                end
-            end
-
-            button.MouseEnter:Connect(function()
-                resize.Visible = true
-            end)
-
-            button.MouseLeave:Connect(function()
-                resize.Visible = false
-            end)
-
-            main:GetPropertyChangedSignal("Visible"):Connect(function()
-                if not main.Visible then
-                    isResizing = false
-                end
-            end)
-
-            button.MouseButton1Down:Connect(function()
-                isResizing = true
-                offset = Vector2.new(mouse.X-(main.AbsolutePosition.X+main.AbsoluteSize.X),mouse.Y-(main.AbsolutePosition.Y+main.AbsoluteSize.Y))
-            end)
-
-            LPH_JIT_MAX(function()
-                table.insert(_connections,Run.RenderStepped:Connect(function()
-                    if not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
-                        isResizing = false
-                    end
-                    if isResizing then
-                        setColor(225)
-                        resize.Visible = true
-                        local mousePos = Vector2.new(mouse.X-offset.X,mouse.Y-offset.Y)
-                        local finalSize = Vector2.new(math.clamp(mousePos.X-main.AbsolutePosition.X,227,math.huge),math.clamp(mousePos.Y-main.AbsolutePosition.Y,225,math.huge))
-                        main.Size = UDim2.fromOffset(finalSize.X,finalSize.Y)
-                    else
-                        setColor(143)
-                    end
-                end))
-            end)()
-        end
-
-        LPH_NO_VIRTUALIZE(function()
-            local t = lib.Hint.Main.Main.Frame["1_main"].Text
-            local hint = lib.Hint
-            table.insert(_connections,Run.RenderStepped:Connect(function()
-                local currentHint
-                local objs = Core:GetGuiObjectsAtPosition(mouse.X,mouse.Y)
-                for _,v in pairs(objs) do
-                    if v:IsDescendantOf(lib) and v:FindFirstChild("Hint") and v.Hint:IsA("StringValue") then
-                        v = v.Hint
-                        local e = v
-                        local allGood = true
-                        while e.Parent~=game do
-                            if (e:IsA("GuiObject") and not e.Visible) or (e:IsA("LayerCollector") and not e.Enabled) then
-                                allGood = false
-                                return
-                            end
-                            e = e.Parent
-                        end
-                        if allGood then
-                            currentHint = v.Value
-                            break
-                        end
-                    end
-                end
-                hint.Visible = currentHint and true
-                t.Text = currentHint or ""
-                hint.Position = UDim2.fromOffset(mouse.X-5,mouse.Y+30)
-            end))
-        end)()
-
-        -- searching
-        do
-            local pages = lib.Main.Contents.Contents
-            --local elementCache = {}
-
-            local function doSearch(term)
-                for _,page in pairs(pages:GetChildren()) do
-                    local holder = page.ScrollingFrame
-
-                    for _,v in pairs(holder:GetChildren()) do
-                        if v:IsA("Frame") and not utility:IsPadding(v) then
-                            local containers = {}
-                            local contents = v:FindFirstChild("Contents")
-
-                            if contents and contents:IsA("Frame") then
-                                table.insert(containers, contents)
-                            else
-                                table.insert(containers, v)
-                            end
-
-                            for _,container in ipairs(containers) do
-                                for _,element in pairs(container:GetChildren()) do
-                                    if element:IsA("Frame") and not utility:IsPadding(element) then
-                                        if term == "" then
-                                            element.Visible = true
-                                        else
-                                            local existingTitle = element:FindFirstChild("Title")
-                                            local title
-
-                                            local function resolveTitleLabel(frame)
-                                                local candidate = frame
-                                                while candidate do
-                                                    if candidate:IsA("TextLabel") then
-                                                        return candidate
-                                                    end
-                                                    local nextCandidate
-                                                    if candidate:IsA("Frame") or candidate:IsA("ScrollingFrame") then
-                                                        nextCandidate = candidate:FindFirstChild("Title")
-                                                    end
-                                                    if not nextCandidate and candidate:IsA("Frame") then
-                                                        nextCandidate = candidate:FindFirstChild("Main")
-                                                    end
-                                                    if not nextCandidate and candidate:IsA("Frame") then
-                                                        nextCandidate = candidate:FindFirstChildWhichIsA("TextLabel", true)
-                                                    end
-                                                    if candidate == nextCandidate then
-                                                        break
-                                                    end
-                                                    candidate = nextCandidate
-                                                end
-                                                return nil
-                                            end
-
-                                            local title = resolveTitleLabel(existingTitle or element)
-                                            if not title then
-                                                warn("doSearch: failed to resolve title for "..element:GetFullName())
-                                                title = element:FindFirstChildWhichIsA("TextLabel", true)
-                                            end
-
-                                            if title then
-                                                local t1,t2 = title.Text:lower(),term:lower()
-
-                                                if t1:find(t2) or t2:find(t1) then
-                                                    element.Visible = true
-                                                else
-                                                    element.Visible = false
-                                                end
-                                            end
-                                        end
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-
-            local searchBar = lib.Main.Contents.Top.SearchBar.TextBox
-
-            local doSearchBtn = utility:CreateButtonObject(lib.Main.Contents.Top.SearchBar.Icon)
-
-            doSearchBtn.Activated:Connect(function()
-                searchBar:ReleaseFocus()
-            end)
-
-            searchBar:GetPropertyChangedSignal("Text"):Connect(function()
-                doSearch(searchBar.Text)
-            end)
-        end
-
-        lib.Main.Contents.Top.Info.Credits.Main.Frame.A.Text = info.Credit
-        lib.Main.Contents.Top.Title.Text = info.Name
-
-        for _,v in pairs(lib:GetDescendants()) do
-            if v:IsA("StringValue") and v.Name=="Theme" and v.Category.Value=="Main" then
-                v.Parent[v.Value] = info.Color
-            end
-        end
-
-        lib.Notifications.Visible = true
-        lib.Main.Visible = true
-        lib.Hint.Visible = false
-
-        local self = setmetatable({
-            -- interface
-            ["Flags"] = flags or {};
-            -- hidden
-            ["container"] = lib;
-            ["name"] = info.Name;
-            ["color"] = info.Color;
-            ["toggleBind"] = info.Bind;
-            -- used internally
-            ["_connections"] = _connections;
-            ["_drag_events"] = dragEvents;
-            ["_page_num"] = 0;
-            ["_saveCoroutine"] = saveCoroutine;
-            ["_usedFlags"] = {};
-            ["_closePages"] = closePages;
-            ["_configPath"] = configPath;
-            ["_encodeFlags"] = encodeFlags;
-            ["_writeConfig"] = writeConfig;
-            ["_autoSaveEnabled"] = saveCoroutine~=nil;
-        }, Library)
-
-        table.insert(self._connections,UIS.InputBegan:Connect(function(input,gpe)
-            if input.UserInputType==Enum.UserInputType.Keyboard and input.KeyCode.Name==self.toggleBind and not gpe then
-                self:Toggle()
-            end
-        end))
-
-        local closeBtn = utility:CreateButtonObject(lib.Main.Contents.Top.Close)
-
-        closeBtn.Activated:Connect(function()
-            self:Toggle(false)
-        end)
-
-        return self
-    end
-    function Library:SetToggle(keyCodeName)
-        self.toggleBind = keyCodeName
-    end
-    function Library:Toggle(value)
-        if value==nil then
-            value = not self.container.Main.Visible
-        end
-        self.container.Main.Visible = value
-        return value
-    end
-    function Library:SaveConfig()
-        if not self._writeConfig then
-            return false
-        end
-        return self._writeConfig() and true or false
-    end
-    function Library:CreatePage(name)
-        self._page_num = self._page_num+1
-        return Page.new(self, {
-            ["Color"] = self.Color;
-            ["Name"] = name;
-        })
-    end
-    function Library:Notify(info)
-        utility:Requirement(info.Title,"Missing title argument")
-        utility:Requirement(info.Content,"Missing content argument")
-
-        info.Duration = info.Duration or 3.5
-
-        info.Callback = info.Callback or utility.BlankFunction
-
-        local function makeNotif()
-            -- Generated using RoadToGlory's Converter v1.1 (RoadToGlory#9879)
-
-            -- Instances:
-
-            local Converted = {
-                ["_Notification"] = Instance.new("Frame");
-                ["_Theme"] = Instance.new("StringValue");
-                ["_Category"] = Instance.new("StringValue");
-                ["_Ignore"] = Instance.new("BoolValue");
-                ["_Frame"] = Instance.new("Frame");
-                ["_Shadow"] = Instance.new("Frame");
-                ["_ImageLabel"] = Instance.new("ImageLabel");
-                ["_Theme1"] = Instance.new("StringValue");
-                ["_Category1"] = Instance.new("StringValue");
-                ["_Ignore1"] = Instance.new("BoolValue");
-                ["_No"] = Instance.new("ImageLabel");
-                ["_Theme2"] = Instance.new("StringValue");
-                ["_Category2"] = Instance.new("StringValue");
-                ["_Ignore2"] = Instance.new("BoolValue");
-                ["_Yes"] = Instance.new("ImageLabel");
-                ["_Theme3"] = Instance.new("StringValue");
-                ["_Category3"] = Instance.new("StringValue");
-                ["_Ignore3"] = Instance.new("BoolValue");
-                ["_Body"] = Instance.new("TextLabel");
-                ["_Theme4"] = Instance.new("StringValue");
-                ["_Category4"] = Instance.new("StringValue");
-                ["_Ignore4"] = Instance.new("BoolValue");
-                ["_Title"] = Instance.new("TextLabel");
-                ["_Theme5"] = Instance.new("StringValue");
-                ["_Category5"] = Instance.new("StringValue");
-                ["_Ignore5"] = Instance.new("BoolValue");
-                ["_UICorner"] = Instance.new("UICorner");
-            }
-
-            -- Properties:
-
-            Converted["_Notification"].BackgroundColor3 = Color3.fromRGB(28.000000230968, 28.000000230968, 28.000000230968)
-            Converted["_Notification"].BackgroundTransparency = 1
-            Converted["_Notification"].Size = UDim2.new(1, 0, 0, 75)
-            Converted["_Notification"].Name = "Notification"
-
-            Converted["_Theme"].Value = "BackgroundColor3"
-            Converted["_Theme"].Name = "Theme"
-            Converted["_Theme"].Parent = Converted["_Notification"]
-
-            Converted["_Category"].Value = "Notification"
-            Converted["_Category"].Name = "Category"
-            Converted["_Category"].Parent = Converted["_Theme"]
-
-            Converted["_Ignore"].Name = "Ignore"
-            Converted["_Ignore"].Parent = Converted["_Theme"]
-
-            Converted["_Frame"].BackgroundColor3 = Color3.fromRGB(28.000000230968, 28.000000230968, 28.000000230968)
-            Converted["_Frame"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_Frame"].Parent = Converted["_Notification"]
-
-            Converted["_Shadow"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_Shadow"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Shadow"].BackgroundTransparency = 1
-            Converted["_Shadow"].Position = UDim2.new(0.5, 0, 0.5, 0)
-            Converted["_Shadow"].Size = UDim2.new(1, 55, 1, 55)
-            Converted["_Shadow"].ZIndex = 0
-            Converted["_Shadow"].Name = "Shadow"
-            Converted["_Shadow"].Parent = Converted["_Frame"]
-
-            Converted["_ImageLabel"].Image = "rbxassetid://10955010523"
-            Converted["_ImageLabel"].ImageColor3 = Color3.fromRGB(0, 0, 0)
-            Converted["_ImageLabel"].ImageTransparency = 0.6499999761581421
-            Converted["_ImageLabel"].ScaleType = Enum.ScaleType.Slice
-            Converted["_ImageLabel"].SliceCenter = Rect.new(60, 60, 360, 360)
-            Converted["_ImageLabel"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_ImageLabel"].BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-            Converted["_ImageLabel"].BackgroundTransparency = 1
-            Converted["_ImageLabel"].Position = UDim2.new(0.5, 0, 0.5, 0)
-            Converted["_ImageLabel"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_ImageLabel"].ZIndex = 0
-            Converted["_ImageLabel"].Parent = Converted["_Shadow"]
-
-            Converted["_Theme1"].Value = "ImageColor3"
-            Converted["_Theme1"].Name = "Theme"
-            Converted["_Theme1"].Parent = Converted["_ImageLabel"]
-
-            Converted["_Category1"].Value = "Shadow"
-            Converted["_Category1"].Name = "Category"
-            Converted["_Category1"].Parent = Converted["_Theme1"]
-
-            Converted["_Ignore1"].Name = "Ignore"
-            Converted["_Ignore1"].Parent = Converted["_Theme1"]
-
-            Converted["_No"].Image = "http://www.roblox.com/asset/?id=10259890025"
-            Converted["_No"].ImageColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_No"].AnchorPoint = Vector2.new(1, 0.5)
-            Converted["_No"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_No"].BackgroundTransparency = 1
-            Converted["_No"].Position = UDim2.new(0.970000029, 0, 0.699999988, 0)
-            Converted["_No"].Size = UDim2.new(0, 23, 0, 23)
-            Converted["_No"].Name = "No"
-            Converted["_No"].Parent = Converted["_Frame"]
-
-            Converted["_Theme2"].Value = "ImageColor3"
-            Converted["_Theme2"].Name = "Theme"
-            Converted["_Theme2"].Parent = Converted["_No"]
-
-            Converted["_Category2"].Value = "Symbols"
-            Converted["_Category2"].Name = "Category"
-            Converted["_Category2"].Parent = Converted["_Theme2"]
-
-            Converted["_Ignore2"].Name = "Ignore"
-            Converted["_Ignore2"].Parent = Converted["_Theme2"]
-
-            Converted["_Yes"].Image = "http://www.roblox.com/asset/?id=10954923256"
-            Converted["_Yes"].ImageColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Yes"].AnchorPoint = Vector2.new(1, 0.5)
-            Converted["_Yes"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Yes"].BackgroundTransparency = 1
-            Converted["_Yes"].Position = UDim2.new(0.970000029, 0, 0.300000012, 0)
-            Converted["_Yes"].Size = UDim2.new(0, 23, 0, 23)
-            Converted["_Yes"].Name = "Yes"
-            Converted["_Yes"].Parent = Converted["_Frame"]
-
-            Converted["_Theme3"].Value = "ImageColor3"
-            Converted["_Theme3"].Name = "Theme"
-            Converted["_Theme3"].Parent = Converted["_Yes"]
-
-            Converted["_Category3"].Value = "Symbols"
-            Converted["_Category3"].Name = "Category"
-            Converted["_Category3"].Parent = Converted["_Theme3"]
-
-            Converted["_Ignore3"].Name = "Ignore"
-            Converted["_Ignore3"].Parent = Converted["_Theme3"]
-
-            Converted["_Body"].Font = Enum.Font.Gotham
-            Converted["_Body"].Text = "Body"
-            Converted["_Body"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Body"].TextSize = 13
-            Converted["_Body"].TextTruncate = Enum.TextTruncate.AtEnd
-            Converted["_Body"].TextWrapped = true
-            Converted["_Body"].TextXAlignment = Enum.TextXAlignment.Left
-            Converted["_Body"].TextYAlignment = Enum.TextYAlignment.Top
-            Converted["_Body"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Body"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Body"].BackgroundTransparency = 1
-            Converted["_Body"].Position = UDim2.new(0.0500000007, 0, 0.670000374, 0)
-            Converted["_Body"].Size = UDim2.new(0.831538498, 0, 0.449999988, 0)
-            Converted["_Body"].Name = "Body"
-            Converted["_Body"].Parent = Converted["_Frame"]
-
-            Converted["_Theme4"].Value = "TextColor3"
-            Converted["_Theme4"].Name = "Theme"
-            Converted["_Theme4"].Parent = Converted["_Body"]
-
-            Converted["_Category4"].Value = "Symbols"
-            Converted["_Category4"].Name = "Category"
-            Converted["_Category4"].Parent = Converted["_Theme4"]
-
-            Converted["_Ignore4"].Name = "Ignore"
-            Converted["_Ignore4"].Parent = Converted["_Theme4"]
-
-            Converted["_Title"].Font = Enum.Font.GothamBold
-            Converted["_Title"].Text = "Notification"
-            Converted["_Title"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Title"].TextSize = 15
-            Converted["_Title"].TextTruncate = Enum.TextTruncate.AtEnd
-            Converted["_Title"].TextWrapped = true
-            Converted["_Title"].TextXAlignment = Enum.TextXAlignment.Left
-            Converted["_Title"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Title"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title"].BackgroundTransparency = 1
-            Converted["_Title"].Position = UDim2.new(0.0500000007, 0, 0.25, 0)
-            Converted["_Title"].Size = UDim2.new(0.831538498, 0, 0.219999999, 0)
-            Converted["_Title"].Name = "Title"
-            Converted["_Title"].Parent = Converted["_Frame"]
-
-            Converted["_Theme5"].Value = "TextColor3"
-            Converted["_Theme5"].Name = "Theme"
-            Converted["_Theme5"].Parent = Converted["_Title"]
-
-            Converted["_Category5"].Value = "Symbols"
-            Converted["_Category5"].Name = "Category"
-            Converted["_Category5"].Parent = Converted["_Theme5"]
-
-            Converted["_Ignore5"].Name = "Ignore"
-            Converted["_Ignore5"].Parent = Converted["_Theme5"]
-
-            Converted["_UICorner"].CornerRadius = UDim.new(0, 6)
-            Converted["_UICorner"].Parent = Converted["_Frame"]
-
-            return Converted["_Notification"]
-        end
-        local notif = makeNotif()
-        notif.Name = tostring(os.clock())
-        local holder = self.container.Notifications
-
-        local tween = nil
-
-        local start = UDim2.fromScale(-1.5,0)
-        local finish = UDim2.fromScale(0,0)
-
-        local function tweenIn()
-            pcall(function()
-                tween:Cancel()
-                tween:Destroy()
-            end)
-
-            notif.Frame.Position = start
-
-            tween = TS:Create(notif.Frame,TweenInfo.new(0.45,Enum.EasingStyle.Sine,Enum.EasingDirection.Out,0,false,0),{
-                ["Position"] = finish;
-            })
-            tween:Play()
-        end
-
-        local leaving = false
-
-        local function tweenOut()
-            if leaving then return else leaving = true end
-            pcall(function()
-                tween:Cancel()
-                tween:Destroy()
-            end)
-
-            notif.Frame.Position = finish
-
-            tween = TS:Create(notif.Frame,TweenInfo.new(0.45,Enum.EasingStyle.Sine,Enum.EasingDirection.In,0,false,0),{
-                ["Position"] = start;
-            })
-            tween.Completed:Connect(function()
-                notif:Destroy()
-            end)
-            tween:Play()
-        end
-
-        notif.Frame.No.Visible = info.ShowNoButton and true
-
-        local yes = utility:CreateButtonObject(notif.Frame.Yes)
-        local no = utility:CreateButtonObject(notif.Frame.No)
-
-        yes.Activated:Connect(function()
-            tweenOut()
-            info.Callback(true)
-        end)
-
-        no.Activated:Connect(function()
-            tweenOut()
-            info.Callback(false)
-        end)
-
-        coroutine.resume(coroutine.create(function()
-            task.wait(info.Duration)
-            if not leaving then
-                tweenOut()
-            end
-        end))
-
-        notif.Frame.Title.Text = info.Title
-        notif.Frame.Body.Text = info.Content
-
-        notif.Parent = holder
-        tweenIn()
-    end
-    function Library:Destroy()
-        self.container:Destroy()
-        for _,v in pairs(self._drag_events) do
-            v:Disconnect()
-        end
-        for _,v in pairs(self._connections) do
-            v:Disconnect()
-        end
-        self._section_update:Disconnect()
-        if self._saveCoroutine then
-            coroutine.close(self._saveCoroutine)
-        end
-        self = nil
-        return nil
-    end
+-- If requests/analytics have been disabled by developer, set the user-facing setting to false as well
+if requestsDisabled then
+	overrideSetting("System", "usageAnalytics", false)
 end
 
--- PAGE
-do
-    function Page.new(_self,info) -- used internally and has no argument checks, use Library::CreatePage instead
-        local container = _self.container
-        local pageNum = _self._page_num
+local HttpService = getService('HttpService')
+local RunService = getService('RunService')
 
-        local function makeSelector()
-            -- Generated using RoadToGlory's Converter v1.1 (RoadToGlory#9879)
-            local Converted = {
-                ["_0_page"] = Instance.new("Frame");
-                ["_TextLabel"] = Instance.new("TextLabel");
-                ["_Theme"] = Instance.new("StringValue");
-                ["_Category"] = Instance.new("StringValue");
-                ["_Ignore"] = Instance.new("BoolValue");
-                ["_UICorner"] = Instance.new("UICorner");
-                ["_Theme1"] = Instance.new("StringValue");
-                ["_Category1"] = Instance.new("StringValue");
-                ["_Ignore1"] = Instance.new("BoolValue");
-                ["_Button"] = Instance.new("TextButton");
-            }
+-- Environment Check
+local useStudio = RunService:IsStudio() or false
 
-            --Properties
+local settingsCreated = false
+local settingsInitialized = false -- Whether the UI elements in the settings page have been set to the proper values
+local cachedSettings
+local prompt = useStudio and require(script.Parent.prompt) or loadWithTimeout('https://raw.githubusercontent.com/SiriusSoftwareLtd/Sirius/refs/heads/request/prompt.lua')
+local requestFunc = (syn and syn.request) or (fluxus and fluxus.request) or (http and http.request) or http_request or request
 
-            Converted["_0_page"].BackgroundColor3 = Color3.fromRGB(28.000000230968, 28.000000230968, 28.000000230968)
-            Converted["_0_page"].BackgroundTransparency = 1
-            Converted["_0_page"].Size = UDim2.new(1, 0, 0, 30)
-            Converted["_0_page"].Name = "page"
-
-            Converted["_TextLabel"].Font = Enum.Font.GothamMedium
-            Converted["_TextLabel"].Text = "Example Page"
-            Converted["_TextLabel"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_TextLabel"].TextSize = 14
-            Converted["_TextLabel"].TextTruncate = Enum.TextTruncate.AtEnd
-            Converted["_TextLabel"].TextXAlignment = Enum.TextXAlignment.Left
-            Converted["_TextLabel"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_TextLabel"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_TextLabel"].BackgroundTransparency = 1
-            Converted["_TextLabel"].Position = UDim2.new(0.5, 0, 0.5, 0)
-            Converted["_TextLabel"].Size = UDim2.new(0.870000005, 0, 1, 0)
-            Converted["_TextLabel"].Parent = Converted["_0_page"]
-
-            Converted["_Theme"].Value = "BackgroundColor3"
-            Converted["_Theme"].Name = "Theme"
-            Converted["_Theme"].Parent = Converted["_TextLabel"]
-
-            Converted["_Category"].Value = "Symbols"
-            Converted["_Category"].Name = "Category"
-            Converted["_Category"].Parent = Converted["_Theme"]
-
-            Converted["_Ignore"].Name = "Ignore"
-            Converted["_Ignore"].Parent = Converted["_Theme"]
-
-            Converted["_UICorner"].CornerRadius = UDim.new(0, 6)
-            Converted["_UICorner"].Parent = Converted["_0_page"]
-
-            Converted["_Theme1"].Value = "BackgroundColor3"
-            Converted["_Theme1"].Name = "Theme"
-            Converted["_Theme1"].Parent = Converted["_0_page"]
-
-            Converted["_Category1"].Value = "PageSelect"
-            Converted["_Category1"].Name = "Category"
-            Converted["_Category1"].Parent = Converted["_Theme1"]
-
-            Converted["_Ignore1"].Name = "Ignore"
-            Converted["_Ignore1"].Parent = Converted["_Theme1"]
-
-            Converted["_Button"].Font = Enum.Font.SourceSans
-            Converted["_Button"].Text = ""
-            Converted["_Button"].TextColor3 = Color3.fromRGB(0, 0, 0)
-            Converted["_Button"].TextSize = 14
-            Converted["_Button"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Button"].BackgroundTransparency = 1
-            Converted["_Button"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_Button"].ZIndex = 5
-            Converted["_Button"].Name = "Button"
-            Converted["_Button"].Parent = Converted["_0_page"]
-
-            return Converted["_0_page"]
-        end
-
-        local function makeContents()
-            -- Generated using RoadToGlory's Converter v1.1 (RoadToGlory#9879)
-            local Converted = {
-                ["_Page"] = Instance.new("Frame");
-                ["_ScrollingFrame"] = Instance.new("ScrollingFrame");
-                ["_UIListLayout"] = Instance.new("UIListLayout");
-                ["_Columns"] = Instance.new("Frame");
-                ["_UIListLayoutColumns"] = Instance.new("UIListLayout");
-                ["_LeftColumn"] = Instance.new("Frame");
-                ["_UIListLayoutLeft"] = Instance.new("UIListLayout");
-                ["_RightColumn"] = Instance.new("Frame");
-                ["_UIListLayoutRight"] = Instance.new("UIListLayout");
-                ["_padding"] = Instance.new("Frame");
-                ["_0_padding"] = Instance.new("Frame");
-                ["_Theme"] = Instance.new("StringValue");
-                ["_Category"] = Instance.new("StringValue");
-                ["_Ignore"] = Instance.new("BoolValue");
-            }
-
-            --Properties
-
-            Converted["_Page"].AnchorPoint = Vector2.new(1, 0.5)
-            Converted["_Page"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Page"].BackgroundTransparency = 1
-            Converted["_Page"].Position = UDim2.new(1, -3, 0.5, 0)
-            Converted["_Page"].Size = UDim2.new(1, -9, 1, -12)
-            Converted["_Page"].Name = "Page"
-
-            Converted["_ScrollingFrame"].AutomaticCanvasSize = Enum.AutomaticSize.Y
-            Converted["_ScrollingFrame"].CanvasSize = UDim2.new(0, 0, 1, 0)
-            Converted["_ScrollingFrame"].ScrollBarImageColor3 = Color3.fromRGB(151.00000619888306, 151.00000619888306, 151.00000619888306)
-            Converted["_ScrollingFrame"].ScrollBarImageTransparency = 0.20000000298023224
-            Converted["_ScrollingFrame"].ScrollBarThickness = 5
-            Converted["_ScrollingFrame"].Active = true
-            Converted["_ScrollingFrame"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_ScrollingFrame"].BackgroundTransparency = 1
-            Converted["_ScrollingFrame"].BorderSizePixel = 0
-            Converted["_ScrollingFrame"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_ScrollingFrame"].Parent = Converted["_Page"]
-
-            Converted["_UIListLayout"].Padding = UDim.new(0, 8)
-            Converted["_UIListLayout"].HorizontalAlignment = Enum.HorizontalAlignment.Center
-            Converted["_UIListLayout"].Parent = Converted["_ScrollingFrame"]
-
-            Converted["_Columns"].AutomaticSize = Enum.AutomaticSize.Y
-            Converted["_Columns"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Columns"].BackgroundTransparency = 1
-            Converted["_Columns"].Size = UDim2.new(1, -8, 0, 0)
-            Converted["_Columns"].Name = "Columns"
-            Converted["_Columns"].Parent = Converted["_ScrollingFrame"]
-
-            Converted["_UIListLayoutColumns"].Padding = UDim.new(0, 6)
-            Converted["_UIListLayoutColumns"].FillDirection = Enum.FillDirection.Horizontal
-            Converted["_UIListLayoutColumns"].HorizontalAlignment = Enum.HorizontalAlignment.Center
-            Converted["_UIListLayoutColumns"].Parent = Converted["_Columns"]
-
-            Converted["_LeftColumn"].AutomaticSize = Enum.AutomaticSize.Y
-            Converted["_LeftColumn"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_LeftColumn"].BackgroundTransparency = 1
-            Converted["_LeftColumn"].Size = UDim2.new(0.5, -2, 0, 0)
-            Converted["_LeftColumn"].Name = "LeftColumn"
-            Converted["_LeftColumn"].Parent = Converted["_Columns"]
-
-            Converted["_UIListLayoutLeft"].Padding = UDim.new(0, 4)
-            Converted["_UIListLayoutLeft"].HorizontalAlignment = Enum.HorizontalAlignment.Center
-            Converted["_UIListLayoutLeft"].Parent = Converted["_LeftColumn"]
-
-            Converted["_RightColumn"].AutomaticSize = Enum.AutomaticSize.Y
-            Converted["_RightColumn"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_RightColumn"].BackgroundTransparency = 1
-            Converted["_RightColumn"].Size = UDim2.new(0.5, -2, 0, 0)
-            Converted["_RightColumn"].Name = "RightColumn"
-            Converted["_RightColumn"].Parent = Converted["_Columns"]
-
-            Converted["_UIListLayoutRight"].Padding = UDim.new(0, 4)
-            Converted["_UIListLayoutRight"].HorizontalAlignment = Enum.HorizontalAlignment.Center
-            Converted["_UIListLayoutRight"].Parent = Converted["_RightColumn"]
-
-            Converted["_padding"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_padding"].BackgroundTransparency = 1
-            Converted["_padding"].Size = UDim2.new(1, 0, 0, 0)
-            Converted["_padding"].Name = "padding"
-            Converted["_padding"].Parent = Converted["_ScrollingFrame"]
-
-            Converted["_0_padding"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_0_padding"].BackgroundTransparency = 1
-            Converted["_0_padding"].Size = UDim2.new(1, 0, 0, 0)
-            Converted["_0_padding"].Name = "0_padding"
-            Converted["_0_padding"].Parent = Converted["_ScrollingFrame"]
-
-            Converted["_Theme"].Value = "ScrollBarImageColor3"
-            Converted["_Theme"].Name = "Theme"
-            Converted["_Theme"].Parent = Converted["_ScrollingFrame"]
-
-            Converted["_Category"].Value = "Scrollbar"
-            Converted["_Category"].Name = "Category"
-            Converted["_Category"].Parent = Converted["_Theme"]
-
-            Converted["_Ignore"].Name = "Ignore"
-            Converted["_Ignore"].Parent = Converted["_Theme"]
-
-            return Converted["_Page"]
-        end
-
-        local selector = makeSelector()
-        local contents = makeContents()
-
-        selector.TextLabel.Text = info.Name
-        local n = string.rep("_",pageNum)..info.Name
-        selector.Name = n
-        contents.Name = n
-
-        local v1 = Instance.new("IntValue")
-        v1.Name = "PageNum"
-        v1.Value = pageNum
-        v1.Parent = selector
-
-        local v2 = Instance.new("IntValue")
-        v2.Name = "PageNum"
-        v2.Value = pageNum
-        v2.Parent = selector
-
-        v1.Parent = selector
-        v2.Parent = contents
-
-        selector.Button.Activated:Connect(function()
-            container.Main.CurrentPage.Value = pageNum
-            _self._closePages()
-        end)
-
-        selector.Parent = container.Main.Contents.Pages.ScrollingFrame
-        contents.Parent = container.Main.Contents.Contents
-
-        local columns = {}
-        local columnsFrame = contents.ScrollingFrame:FindFirstChild("Columns")
-        if columnsFrame then
-            local left = columnsFrame:FindFirstChild("LeftColumn")
-            local right = columnsFrame:FindFirstChild("RightColumn")
-            if left then table.insert(columns,left) end
-            if right then table.insert(columns,right) end
-        end
-
-        return setmetatable({
-            ["_self"] = _self;
-            ["superior"] = container;
-            ["selector"] = selector;
-            ["contents"] = contents;
-            ["pageName"] = info.Name;
-            ["pageNum"] = pageNum;
-            ["sectionNum"] = 0;
-            ["color"] = info.Color;
-            ["columns"] = columns;
-            ["_columnIndex"] = 1;
-        }, Page)
-    end
-
-    function Page:CreateSection(name, column)
-        self.sectionNum = self.sectionNum+1
-        local targetColumn
-        
-        if self.columns and #self.columns>0 then
-            if column then
-                -- Handle explicit column specification
-                if column == "Left" then
-                    targetColumn = self.columns[1] -- LeftColumn
-                elseif column == "Right" then
-                    targetColumn = self.columns[2] -- RightColumn
-                else
-                    -- Invalid column specification, fall back to alternating
-                    targetColumn = self.columns[self._columnIndex]
-                    self._columnIndex = (self._columnIndex % #self.columns) + 1
-                end
-            else
-                -- Default alternating behavior
-                targetColumn = self.columns[self._columnIndex]
-                self._columnIndex = (self._columnIndex % #self.columns) + 1
-            end
-        end
-        
-        return Section.new(self,{
-            ["Name"] = name;
-            ["Page"] = self.contents;
-            ["ColumnTarget"] = targetColumn;
-        })
-    end
-
-    function Page:Destroy()
-        self.selector:Destroy()
-        self.contents:Destroy()
-        self = nil
-        return nil
-    end
+-- Validate prompt loaded correctly
+if not prompt and not useStudio then
+	warn("Failed to load prompt library, using fallback")
+	prompt = {
+		create = function() end -- No-op fallback
+	}
 end
 
--- SECTION
-do
-    function Section.new(_self,info) -- used internally and has no argument checks, use Page::CreateSection instead
-        local sectionNum = _self.sectionNum
-        local color = _self.color
 
-        local function makeSection()
-            -- Generated using RoadToGlory's Converter v1.1 (RoadToGlory#9879)
-            local Converted = {
-                ["_Section"] = Instance.new("Frame");
-                ["_UICorner"] = Instance.new("UICorner");
-                ["_Contents"] = Instance.new("Frame");
-                ["_UIPadding"] = Instance.new("UIPadding");
-                ["_UIListLayout"] = Instance.new("UIListLayout");
-                ["_Title"] = Instance.new("TextLabel");
-                ["_Theme"] = Instance.new("StringValue");
-                ["_Category"] = Instance.new("StringValue");
-                ["_Ignore"] = Instance.new("BoolValue");
-            }
 
-            --Properties
+local function loadSettings()
+	local file = nil
 
-            Converted["_Section"].AutomaticSize = Enum.AutomaticSize.Y
-            Converted["_Section"].BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-            Converted["_Section"].BackgroundTransparency = 0
-            Converted["_Section"].Size = UDim2.new(1, 0, 0, 10)
-            Converted["_Section"].Name = "Section"
+	local success, result =	pcall(function()
+		task.spawn(function()
+			if isfolder and isfolder(RayfieldFolder) then
+				if isfile and isfile(RayfieldFolder..'/settings'..ConfigurationExtension) then
+					file = readfile(RayfieldFolder..'/settings'..ConfigurationExtension)
+				end
+			end
 
-            Converted["_UICorner"].CornerRadius = UDim.new(0, 6)
-            Converted["_UICorner"].Parent = Converted["_Section"]
+			-- for debug in studio
+			if useStudio then
+				file = [[
+		{"General":{"rayfieldOpen":{"Value":"K","Type":"bind","Name":"Rayfield Keybind","Element":{"HoldToInteract":false,"Ext":true,"Name":"Rayfield Keybind","Set":null,"CallOnChange":true,"Callback":null,"CurrentKeybind":"K"}}},"System":{"usageAnalytics":{"Value":false,"Type":"toggle","Name":"Anonymised Analytics","Element":{"Ext":true,"Name":"Anonymised Analytics","Set":null,"CurrentValue":false,"Callback":null}}}}
+	]]
+			end
 
-            Converted["_Contents"].AutomaticSize = Enum.AutomaticSize.Y
-            Converted["_Contents"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Contents"].BackgroundTransparency = 1
-            Converted["_Contents"].Position = UDim2.new(0, 0, 0, 26)
-            Converted["_Contents"].Size = UDim2.new(1, 0, 0, 0)
-            Converted["_Contents"].Name = "Contents"
-            Converted["_Contents"].Parent = Converted["_Section"]
 
-            Converted["_UIPadding"].PaddingBottom = UDim.new(0, 12)
-            Converted["_UIPadding"].PaddingLeft = UDim.new(0, 12)
-            Converted["_UIPadding"].PaddingRight = UDim.new(0, 12)
-            Converted["_UIPadding"].Parent = Converted["_Contents"]
+			if file then
+				local success, decodedFile = pcall(function() return HttpService:JSONDecode(file) end)
+				if success then
+					file = decodedFile
+				else
+					file = {}
+				end
+			else
+				file = {}
+			end
 
-            Converted["_UIListLayout"].Padding = UDim.new(0, 6)
-            Converted["_UIListLayout"].HorizontalAlignment = Enum.HorizontalAlignment.Left
-            Converted["_UIListLayout"].Parent = Converted["_Contents"]
 
-            Converted["_Title"].Font = Enum.Font.Gotham
-            Converted["_Title"].Text = "Section"
-            Converted["_Title"].TextColor3 = Color3.fromRGB(165.00000536441803, 165.00000536441803, 165.00000536441803)
-            Converted["_Title"].TextScaled = false
-            Converted["_Title"].TextSize = 13
-            Converted["_Title"].TextTruncate = Enum.TextTruncate.AtEnd
-            Converted["_Title"].TextWrapped = true
-            Converted["_Title"].TextXAlignment = Enum.TextXAlignment.Left
-            Converted["_Title"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title"].BackgroundTransparency = 1
-            Converted["_Title"].Position = UDim2.new(0, 12, 0, 8)
-            Converted["_Title"].Size = UDim2.new(1, -24, 0, 13)
-            Converted["_Title"].Name = "Title"
-            Converted["_Title"].Parent = Converted["_Section"]
+			if not settingsCreated then 
+				cachedSettings = file
+				return
+			end
 
-            Converted["_Theme"].Value = "TextColor3"
-            Converted["_Theme"].Name = "Theme"
-            Converted["_Theme"].Parent = Converted["_Title"]
+			if file ~= {} then
+				for categoryName, settingCategory in pairs(settingsTable) do
+					if file[categoryName] then
+						for settingName, setting in pairs(settingCategory) do
+							if file[categoryName][settingName] then
+								setting.Value = file[categoryName][settingName].Value
+								setting.Element:Set(getSetting(categoryName, settingName))
+							end
+						end
+					end
+				end
+			end
+			settingsInitialized = true
+		end)
+	end)
 
-            Converted["_Category"].Value = "Section"
-            Converted["_Category"].Name = "Category"
-            Converted["_Category"].Parent = Converted["_Theme"]
-
-            Converted["_Ignore"].Name = "Ignore"
-            Converted["_Ignore"].Parent = Converted["_Theme"]
-
-            return Converted["_Section"]
-        end
-
-        local section = makeSection()
-
-        local pageInner = info.ColumnTarget or info.Page.ScrollingFrame
-
-        section.Title.Text = info.Name
-        section.Name = string.rep("_",sectionNum)..info.Name
-
-        section.Parent = pageInner
-
-        return setmetatable({
-            ["_self"] = _self._self;
-            ["holder"] = section;
-            ["sectionName"] = info.Name;
-            ["elementNum"] = 0;
-            ["color"] = color;
-        }, Section)
-    end
-    function Section:CreateToggle(...)
-        return Element.CreateToggle(self, ...)
-    end
-    function Section:CreateSlider(...)
-        return Element.CreateSlider(self, ...)
-    end
-    function Section:CreateSliderToggle(...)
-        return Element.CreateSliderToggle(self, ...)
-    end
-    function Section:CreateParagraph(...)
-        local args = {...}
-        if #args==1 and type(args[1])=="string" then
-            args = {
-                {
-                    ["Content"] = args[1];
-                }
-            }
-        end
-        return Element.CreateParagraph(self, unpack(args))
-    end
-    function Section:CreateBody(...) -- alias for ::CreateParagraph as ::CreateBody was used in Artemis
-        -- do not use, this can be removed at any time without notice, use ::CreateParagraph instead
-        return Section:CreateParagraph(...)
-    end
-    function Section:CreateButton(...)
-        return Element.CreateButton(self, ...)
-    end
-    function Section:CreateTextBox(...)
-        return Element.CreateTextBox(self, ...)
-    end
-    function Section:CreateInteractable(...)
-        return Element.CreateInteractable(self, ...)
-    end
-    function Section:CreateKeybind(...)
-        return Element.CreateKeybind(self, ...)
-    end
-    function Section:CreateKeyBind(...) -- alias for ::CreateParagraph as ::CreateBody was used in Artemis
-        -- do not use, this can be removed at any time without notice, use ::CreateParagraph instead
-        return Section:CreateKeybind(...)
-    end
-    function Section:CreateDropdown(...)
-        return Element.CreateDropdown(self, ...)
-    end
-    function Section:CreateColorPicker(...)
-        return Element.CreateColorPicker(self, ...)
-    end
+	if not success then 
+		if writefile then
+			warn('Rayfield had an issue accessing configuration saving capability.')
+		end
+	end
 end
 
--- ELEMENTS
-do
-    function Element.CreateToggle(section,info)
-        local _self = section._self
-        -- Requirements
-        utility:Requirement(type(info)=="table","Info must be a table!")
-        utility:Requirement(info.Name,"Missing name argument")
-        utility:Requirement(info.Flag,"Missing flag argument")
-
-        if _self._usedFlags[info.Flag] then
-            warn("Flag must have unique name!")
-            return
-        else
-            _self._usedFlags[info.Flag] = info.SavingDisabled and "disabled" or true
-        end
-
-        if info.Default == nil then
-            info.Default = false
-        end
-
-        if _self.Flags[info.Flag]==nil then
-            _self.Flags[info.Flag] = info.Default
-        end
-
-        if info.SavingDisabled then
-            _self.Flags[info.Flag] = info.Default
-        end
-
-        info.Callback = info.Callback or utility.BlankFunction
-
-        if info.CallbackOnCreation then
-            coroutine.wrap(info.Callback)(_self.Flags[info.Flag])
-        end
-
-        section.elementNum = section.elementNum+1
-
-        local elementNum = section.elementNum
-
-        local function createElement()
-            -- Generated using RoadToGlory's Converter v1.1 (RoadToGlory#9879)
-            local Converted = {
-                ["_0_Toggle"] = Instance.new("Frame");
-                ["_UICorner"] = Instance.new("UICorner");
-                ["_Toggle"] = Instance.new("Frame");
-                ["_UICorner1"] = Instance.new("UICorner");
-                ["_UIStroke"] = Instance.new("UIStroke");
-                ["_Theme"] = Instance.new("StringValue");
-                ["_Category"] = Instance.new("StringValue");
-                ["_Ignore"] = Instance.new("BoolValue");
-                ["_ImageLabel"] = Instance.new("ImageLabel");
-                ["_Theme1"] = Instance.new("StringValue");
-                ["_Category1"] = Instance.new("StringValue");
-                ["_Ignore1"] = Instance.new("BoolValue");
-                ["_Theme2"] = Instance.new("StringValue");
-                ["_Category2"] = Instance.new("StringValue");
-                ["_Ignore2"] = Instance.new("BoolValue");
-                ["_Theme3"] = Instance.new("StringValue");
-                ["_Category3"] = Instance.new("StringValue");
-                ["_Ignore3"] = Instance.new("BoolValue");
-                ["_Title"] = Instance.new("Frame");
-                ["_Main"] = Instance.new("Frame");
-                ["_Title1"] = Instance.new("TextLabel");
-                ["_Theme4"] = Instance.new("StringValue");
-                ["_Category4"] = Instance.new("StringValue");
-                ["_Ignore4"] = Instance.new("BoolValue");
-                ["_Warning"] = Instance.new("ImageLabel");
-                ["_Theme5"] = Instance.new("StringValue");
-                ["_Category5"] = Instance.new("StringValue");
-                ["_Ignore5"] = Instance.new("BoolValue");
-                ["_UIListLayout"] = Instance.new("UIListLayout");
-                ["_Element"] = Instance.new("StringValue");
-            }
-
-            --Properties
-
-            Converted["_0_Toggle"].BackgroundColor3 = Color3.fromRGB(28.000000230968, 28.000000230968, 28.000000230968)
-            Converted["_0_Toggle"].Size = UDim2.new(1, 0, 0, 35)
-            Converted["_0_Toggle"].Name = "0_Toggle"
-
-            Converted["_UICorner"].CornerRadius = UDim.new(0, 4)
-            Converted["_UICorner"].Parent = Converted["_0_Toggle"]
-
-            Converted["_Toggle"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_Toggle"].BackgroundColor3 = Color3.fromRGB(28.000000230968, 28.000000230968, 28.000000230968)
-            Converted["_Toggle"].Position = UDim2.new(1, -18, 0.5, 0)
-            Converted["_Toggle"].Size = UDim2.new(0, 19, 0, 19)
-            Converted["_Toggle"].Name = "Toggle"
-            Converted["_Toggle"].Parent = Converted["_0_Toggle"]
-
-            Converted["_UICorner1"].CornerRadius = UDim.new(0, 3)
-            Converted["_UICorner1"].Parent = Converted["_Toggle"]
-
-            Converted["_UIStroke"].Color = Color3.fromRGB(84.00000259280205, 84.00000259280205, 84.00000259280205)
-            Converted["_UIStroke"].Parent = Converted["_Toggle"]
-
-            Converted["_Theme"].Value = "Color"
-            Converted["_Theme"].Name = "Theme"
-            Converted["_Theme"].Parent = Converted["_UIStroke"]
-
-            Converted["_Category"].Value = "ToggleOutline"
-            Converted["_Category"].Name = "Category"
-            Converted["_Category"].Parent = Converted["_Theme"]
-
-            Converted["_Ignore"].Name = "Ignore"
-            Converted["_Ignore"].Parent = Converted["_Theme"]
-
-            Converted["_ImageLabel"].Image = "http://www.roblox.com/asset/?id=10954923256"
-            Converted["_ImageLabel"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_ImageLabel"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_ImageLabel"].BackgroundTransparency = 1
-            Converted["_ImageLabel"].Position = UDim2.new(0.5, 0, 0.5, 0)
-            Converted["_ImageLabel"].Parent = Converted["_Toggle"]
-
-            Converted["_Theme1"].Value = "ImageColor3"
-            Converted["_Theme1"].Name = "Theme"
-            Converted["_Theme1"].Parent = Converted["_ImageLabel"]
-
-            Converted["_Category1"].Value = "SymbolSelect"
-            Converted["_Category1"].Name = "Category"
-            Converted["_Category1"].Parent = Converted["_Theme1"]
-
-            Converted["_Ignore1"].Name = "Ignore"
-            Converted["_Ignore1"].Parent = Converted["_Theme1"]
-
-            Converted["_Theme2"].Value = "BackgroundColor3"
-            Converted["_Theme2"].Name = "Theme"
-            Converted["_Theme2"].Parent = Converted["_Toggle"]
-
-            Converted["_Category2"].Value = "Element"
-            Converted["_Category2"].Name = "Category"
-            Converted["_Category2"].Parent = Converted["_Theme2"]
-
-            Converted["_Ignore2"].Name = "Ignore"
-            Converted["_Ignore2"].Parent = Converted["_Theme2"]
-
-            Converted["_Theme3"].Value = "BackgroundColor3"
-            Converted["_Theme3"].Name = "Theme"
-            Converted["_Theme3"].Parent = Converted["_0_Toggle"]
-
-            Converted["_Category3"].Value = "Element"
-            Converted["_Category3"].Name = "Category"
-            Converted["_Category3"].Parent = Converted["_Theme3"]
-
-            Converted["_Ignore3"].Name = "Ignore"
-            Converted["_Ignore3"].Parent = Converted["_Theme3"]
-
-            Converted["_Title"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Title"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title"].BackgroundTransparency = 1
-            Converted["_Title"].Position = UDim2.new(0, 9, 0.5, 0)
-            Converted["_Title"].Size = UDim2.new(1, -60, 0, 14)
-            Converted["_Title"].Name = "Title"
-            Converted["_Title"].Parent = Converted["_0_Toggle"]
-
-            Converted["_Main"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Main"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Main"].BackgroundTransparency = 1
-            Converted["_Main"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Main"].Name = "Main"
-            Converted["_Main"].Parent = Converted["_Title"]
-
-            Converted["_Title1"].Font = Enum.Font.GothamMedium
-            Converted["_Title1"].Text = "Toggle"
-            Converted["_Title1"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Title1"].TextSize = 14
-            Converted["_Title1"].TextTruncate = Enum.TextTruncate.AtEnd
-            Converted["_Title1"].TextWrapped = true
-            Converted["_Title1"].TextXAlignment = Enum.TextXAlignment.Left
-            Converted["_Title1"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Title1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title1"].BackgroundTransparency = 1
-            Converted["_Title1"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Title1"].Name = "Title"
-            Converted["_Title1"].Parent = Converted["_Main"]
-
-            Converted["_Theme4"].Value = "TextColor3"
-            Converted["_Theme4"].Name = "Theme"
-            Converted["_Theme4"].Parent = Converted["_Title1"]
-
-            Converted["_Category4"].Value = "Symbols"
-            Converted["_Category4"].Name = "Category"
-            Converted["_Category4"].Parent = Converted["_Theme4"]
-
-            Converted["_Ignore4"].Name = "Ignore"
-            Converted["_Ignore4"].Parent = Converted["_Theme4"]
-
-            Converted["_Warning"].Image = "http://www.roblox.com/asset/?id=10969141992"
-            Converted["_Warning"].ImageColor3 = Color3.fromRGB(255, 249.0000155568123, 53.000004440546036)
-            Converted["_Warning"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Warning"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Warning"].BackgroundTransparency = 1
-            Converted["_Warning"].Size = UDim2.new(0, 16, 0, 16)
-            Converted["_Warning"].Visible = false
-            Converted["_Warning"].Name = "Warning"
-            Converted["_Warning"].Parent = Converted["_Title"]
-
-            Converted["_Theme5"].Value = "ImageColor3"
-            Converted["_Theme5"].Name = "Theme"
-            Converted["_Theme5"].Parent = Converted["_Warning"]
-
-            Converted["_Category5"].Value = "Warning"
-            Converted["_Category5"].Name = "Category"
-            Converted["_Category5"].Parent = Converted["_Theme5"]
-
-            Converted["_Ignore5"].Name = "Ignore"
-            Converted["_Ignore5"].Parent = Converted["_Theme5"]
-
-            Converted["_UIListLayout"].Padding = UDim.new(0, 2)
-            Converted["_UIListLayout"].FillDirection = Enum.FillDirection.Horizontal
-            Converted["_UIListLayout"].SortOrder = Enum.SortOrder.LayoutOrder
-            Converted["_UIListLayout"].VerticalAlignment = Enum.VerticalAlignment.Bottom
-            Converted["_UIListLayout"].Parent = Converted["_Title"]
-
-            Converted["_Element"].Value = "Toggle"
-            Converted["_Element"].Name = "Element"
-            Converted["_Element"].Parent = Converted["_0_Toggle"]
-
-            return Converted["_0_Toggle"]
-        end
-
-        local element = createElement()
-
-        do -- toggling
-            local toggle = element.Toggle
-            local img = toggle.ImageLabel
-
-            local toggleBtn = utility:CreateButtonObject(toggle)
-
-            local tween1,tween2
-
-            toggleBtn.Activated:Connect(function()
-                _self.Flags[info.Flag] = not _self.Flags[info.Flag]
-                coroutine.wrap(info.Callback)(_self.Flags[info.Flag])
-            end)
-
-            local bigButton = utility:CreateButtonObject(element)
-            bigButton.ZIndex = 0
-            bigButton.Activated:Connect(function()
-                utility:DoClickEffect(element)
-                _self.Flags[info.Flag] = not _self.Flags[info.Flag]
-                coroutine.wrap(info.Callback)(_self.Flags[info.Flag])
-            end)
-
-            local tweenInfo = TweenInfo.new(0.1,Enum.EasingStyle.Sine,Enum.EasingDirection.In,0,false,0)
-
-            local lastFlag = nil
-            local con
-            LPH_JIT_MAX(function()
-                con = Run.RenderStepped:Connect(function()
-                    local currentFlag = _self.Flags[info.Flag]
-
-                    local imageGoalSize = currentFlag and UDim2.fromScale(0.9,0.9) or UDim2.fromScale(0,0)
-                    local backgroundGoalColor = currentFlag and _self.color or Color3.fromRGB(28, 28, 28)
-    
-                    if lastFlag==nil then
-                        toggle.BackgroundColor3 = backgroundGoalColor
-                        img.Size = imageGoalSize
-                    elseif lastFlag~=currentFlag then
-                        pcall(function()
-                            tween1:Disconnect()
-                            tween1:Destroy()
-                        end)
-                        pcall(function()
-                            tween2:Disconnect()
-                            tween2:Destroy()
-                        end)
-                        tween1 = TS:Create(toggle,tweenInfo,{
-                            ["BackgroundColor3"] = backgroundGoalColor
-                        })
-                        tween2 = TS:Create(img,tweenInfo,{
-                            ["Size"] = imageGoalSize
-                        })
-                        tween1:Play()
-                        tween2:Play()
-                    end
-                    lastFlag = currentFlag
-                end)
-            end)()
-            table.insert(_self._connections,con)
-        end
-
-        info.WarningIcon = info.WarningIcon or Library.Icons.Warning
-        element.Title.Warning.Image = "http://www.roblox.com/asset/?id="..info.WarningIcon
-        if info.Warning then
-            element.Title.Warning.ImageColor3 = Color3.new(1,1,1)
-            element.Title.Warning.Visible = true
-            local hint = utility:CreateHint()
-            hint.Value = info.Warning
-            hint.Parent = element.Title.Warning
-        end
-
-        element.Toggle.ImageLabel.ImageColor3 = utility:GetTextContrast(_self.color)
-        element.Title.Main.Title.Text = info.Name
-        element.Name = string.rep("_",elementNum)..info.Name
-        element.Parent = section.holder.Contents
-    end
-    function Element.CreateSlider(section,info)
-        local _self = section._self
-        -- Requirements
-        utility:Requirement(type(info)=="table","Info must be a table!")
-        utility:Requirement(info.Name,"Missing name argument")
-        utility:Requirement(info.Flag,"Missing flag argument")
-        utility:Requirement(info.Min,"Missing min argument")
-        utility:Requirement(info.Max,"Missing max argument")
-        utility:Requirement(info.Max>info.Min,"Max must be larger than min")
-
-        if _self._usedFlags[info.Flag] then
-            warn("Flag must have unique name!")
-            return
-        else
-            _self._usedFlags[info.Flag] = true
-        end
-
-        if info.Default==nil then
-            info.Default = info.Min
-        end
-        if info.AllowOutOfRange==nil then
-            info.AllowOutOfRange = false
-        end
-        if info.Digits==nil then
-            info.Digits = 0
-        end
-        info.Callback = info.Callback or utility.BlankFunction
-
-        if _self.Flags[info.Flag]==nil then
-            _self.Flags[info.Flag] = info.Default
-        end
-
-        if info.SavingDisabled then
-            _self.Flags[info.Flag] = info.Default
-        end
-
-        if info.CallbackOnCreation then
-            coroutine.wrap(info.Callback)(_self.Flags[info.Flag])
-        end
-
-        section.elementNum = section.elementNum+1
-
-        local elementNum = section.elementNum
-
-        local function createElement()
-            -- Generated using RoadToGlory's Converter v1.1 (RoadToGlory#9879)
-            local Converted = {
-                ["_1_Slider"] = Instance.new("Frame");
-                ["_UICorner"] = Instance.new("UICorner");
-                ["_Slider"] = Instance.new("ImageLabel");
-                ["_Slider1"] = Instance.new("ImageLabel");
-                ["_Theme"] = Instance.new("StringValue");
-                ["_Category"] = Instance.new("StringValue");
-                ["_Ignore"] = Instance.new("BoolValue");
-                ["_Theme1"] = Instance.new("StringValue");
-                ["_Category1"] = Instance.new("StringValue");
-                ["_Ignore1"] = Instance.new("BoolValue");
-                ["_Input"] = Instance.new("TextBox");
-                ["_Theme2"] = Instance.new("StringValue");
-                ["_Category2"] = Instance.new("StringValue");
-                ["_Ignore2"] = Instance.new("BoolValue");
-                ["_Title"] = Instance.new("Frame");
-                ["_Main"] = Instance.new("Frame");
-                ["_Title1"] = Instance.new("TextLabel");
-                ["_Theme3"] = Instance.new("StringValue");
-                ["_Category3"] = Instance.new("StringValue");
-                ["_Ignore3"] = Instance.new("BoolValue");
-                ["_Warning"] = Instance.new("ImageLabel");
-                ["_Theme4"] = Instance.new("StringValue");
-                ["_Category4"] = Instance.new("StringValue");
-                ["_Ignore4"] = Instance.new("BoolValue");
-                ["_UIListLayout"] = Instance.new("UIListLayout");
-                ["_Theme5"] = Instance.new("StringValue");
-                ["_Category5"] = Instance.new("StringValue");
-                ["_Ignore5"] = Instance.new("BoolValue");
-                ["_Element"] = Instance.new("StringValue");
-            }
-
-            --Properties
-
-            Converted["_1_Slider"].BackgroundColor3 = Color3.fromRGB(28.000000230968, 28.000000230968, 28.000000230968)
-            Converted["_1_Slider"].BorderColor3 = Color3.fromRGB(27.000000290572643, 42.000001296401024, 53.00000064074993)
-            Converted["_1_Slider"].Position = UDim2.new(-1.51867283e-07, 0, 0.46425584, 0)
-            Converted["_1_Slider"].Size = UDim2.new(1, 0, 0, 50)
-            Converted["_1_Slider"].Name = "1_Slider"
-
-            Converted["_UICorner"].CornerRadius = UDim.new(0, 4)
-            Converted["_UICorner"].Parent = Converted["_1_Slider"]
-
-            Converted["_Slider"].Image = "rbxassetid://10261338527"
-            Converted["_Slider"].ImageColor3 = Color3.fromRGB(18.000000827014446, 18.000000827014446, 18.000000827014446)
-            Converted["_Slider"].ScaleType = Enum.ScaleType.Slice
-            Converted["_Slider"].SliceCenter = Rect.new(100, 100, 100, 100)
-            Converted["_Slider"].AnchorPoint = Vector2.new(0.5, 1)
-            Converted["_Slider"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Slider"].BackgroundTransparency = 1
-            Converted["_Slider"].Position = UDim2.new(0.5, 0, 0.774999976, 0)
-            Converted["_Slider"].Size = UDim2.new(1, -18, 0, 4)
-            Converted["_Slider"].Name = "Slider"
-            Converted["_Slider"].Parent = Converted["_1_Slider"]
-
-            Converted["_Slider1"].Image = "rbxassetid://10261338527"
-            Converted["_Slider1"].ImageColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Slider1"].ScaleType = Enum.ScaleType.Slice
-            Converted["_Slider1"].SliceCenter = Rect.new(100, 100, 100, 100)
-            Converted["_Slider1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Slider1"].BackgroundTransparency = 1
-            Converted["_Slider1"].Size = UDim2.new(0.5, 0, 1, 0)
-            Converted["_Slider1"].Name = "Slider"
-            Converted["_Slider1"].Parent = Converted["_Slider"]
-
-            Converted["_Theme"].Value = "ImageColor3"
-            Converted["_Theme"].Name = "Theme"
-            Converted["_Theme"].Parent = Converted["_Slider1"]
-
-            Converted["_Category"].Value = "Symbols"
-            Converted["_Category"].Name = "Category"
-            Converted["_Category"].Parent = Converted["_Theme"]
-
-            Converted["_Ignore"].Name = "Ignore"
-            Converted["_Ignore"].Parent = Converted["_Theme"]
-
-            Converted["_Theme1"].Value = "ImageColor3"
-            Converted["_Theme1"].Name = "Theme"
-            Converted["_Theme1"].Parent = Converted["_Slider"]
-
-            Converted["_Category1"].Value = "Background"
-            Converted["_Category1"].Name = "Category"
-            Converted["_Category1"].Parent = Converted["_Theme1"]
-
-            Converted["_Ignore1"].Name = "Ignore"
-            Converted["_Ignore1"].Parent = Converted["_Theme1"]
-
-            Converted["_Input"].Font = Enum.Font.GothamMedium
-            Converted["_Input"].PlaceholderColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Input"].Text = "0"
-            Converted["_Input"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Input"].TextSize = 14
-            Converted["_Input"].TextTruncate = Enum.TextTruncate.AtEnd
-            Converted["_Input"].TextXAlignment = Enum.TextXAlignment.Right
-            Converted["_Input"].AnchorPoint = Vector2.new(1, 0.5)
-            Converted["_Input"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Input"].BackgroundTransparency = 1
-            Converted["_Input"].Position = UDim2.new(0.999999881, -9, 0, 17)
-            Converted["_Input"].Size = UDim2.new(0.309244812, -45, 0, 14)
-            Converted["_Input"].Name = "Input"
-            Converted["_Input"].Parent = Converted["_1_Slider"]
-
-            Converted["_Theme2"].Value = "TextColor3"
-            Converted["_Theme2"].Name = "Theme"
-            Converted["_Theme2"].Parent = Converted["_Input"]
-
-            Converted["_Category2"].Value = "Symbols"
-            Converted["_Category2"].Name = "Category"
-            Converted["_Category2"].Parent = Converted["_Theme2"]
-
-            Converted["_Ignore2"].Name = "Ignore"
-            Converted["_Ignore2"].Parent = Converted["_Theme2"]
-
-            Converted["_Title"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Title"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title"].BackgroundTransparency = 1
-            Converted["_Title"].Position = UDim2.new(0, 8, 0, 17)
-            Converted["_Title"].Size = UDim2.new(0.787999988, -45, 0, 14)
-            Converted["_Title"].Name = "Title"
-            Converted["_Title"].Parent = Converted["_1_Slider"]
-
-            Converted["_Main"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Main"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Main"].BackgroundTransparency = 1
-            Converted["_Main"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Main"].Name = "Main"
-            Converted["_Main"].Parent = Converted["_Title"]
-
-            Converted["_Title1"].Font = Enum.Font.GothamMedium
-            Converted["_Title1"].Text = "Slider"
-            Converted["_Title1"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Title1"].TextSize = 14
-            Converted["_Title1"].TextTruncate = Enum.TextTruncate.AtEnd
-            Converted["_Title1"].TextWrapped = true
-            Converted["_Title1"].TextXAlignment = Enum.TextXAlignment.Left
-            Converted["_Title1"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Title1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title1"].BackgroundTransparency = 1
-            Converted["_Title1"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Title1"].Name = "Title"
-            Converted["_Title1"].Parent = Converted["_Main"]
-
-            Converted["_Theme3"].Value = "TextColor3"
-            Converted["_Theme3"].Name = "Theme"
-            Converted["_Theme3"].Parent = Converted["_Title1"]
-
-            Converted["_Category3"].Value = "Symbols"
-            Converted["_Category3"].Name = "Category"
-            Converted["_Category3"].Parent = Converted["_Theme3"]
-
-            Converted["_Ignore3"].Name = "Ignore"
-            Converted["_Ignore3"].Parent = Converted["_Theme3"]
-
-            Converted["_Warning"].Image = "http://www.roblox.com/asset/?id=10969141992"
-            Converted["_Warning"].ImageColor3 = Color3.fromRGB(255, 249.0000155568123, 53.000004440546036)
-            Converted["_Warning"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Warning"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Warning"].BackgroundTransparency = 1
-            Converted["_Warning"].Size = UDim2.new(0, 16, 0, 16)
-            Converted["_Warning"].Visible = false
-            Converted["_Warning"].Name = "Warning"
-            Converted["_Warning"].Parent = Converted["_Title"]
-
-            Converted["_Theme4"].Value = "ImageColor3"
-            Converted["_Theme4"].Name = "Theme"
-            Converted["_Theme4"].Parent = Converted["_Warning"]
-
-            Converted["_Category4"].Value = "Warning"
-            Converted["_Category4"].Name = "Category"
-            Converted["_Category4"].Parent = Converted["_Theme4"]
-
-            Converted["_Ignore4"].Name = "Ignore"
-            Converted["_Ignore4"].Parent = Converted["_Theme4"]
-
-            Converted["_UIListLayout"].Padding = UDim.new(0, 2)
-            Converted["_UIListLayout"].FillDirection = Enum.FillDirection.Horizontal
-            Converted["_UIListLayout"].SortOrder = Enum.SortOrder.LayoutOrder
-            Converted["_UIListLayout"].VerticalAlignment = Enum.VerticalAlignment.Bottom
-            Converted["_UIListLayout"].Parent = Converted["_Title"]
-
-            Converted["_Theme5"].Value = "BackgroundColor3"
-            Converted["_Theme5"].Name = "Theme"
-            Converted["_Theme5"].Parent = Converted["_1_Slider"]
-
-            Converted["_Category5"].Value = "Element"
-            Converted["_Category5"].Name = "Category"
-            Converted["_Category5"].Parent = Converted["_Theme5"]
-
-            Converted["_Ignore5"].Name = "Ignore"
-            Converted["_Ignore5"].Parent = Converted["_Theme5"]
-
-            Converted["_Element"].Value = "Slider"
-            Converted["_Element"].Name = "Element"
-            Converted["_Element"].Parent = Converted["_1_Slider"]
-
-            return Converted["_1_Slider"]
-        end
-
-        local element = createElement()
-
-        do -- sliding
-            local slider = element.Slider
-            local inner = slider.Slider
-            local sliderButton = utility:CreateButtonObject(slider)
-            sliderButton.Size = UDim2.fromScale(1,3)
-            local input = element.Input
-
-            local dragging = false
-
-            local lastFlag = nil
-            local con
-            local lastMouseX = mouse.X
-
-            sliderButton.MouseButton1Down:Connect(function()
-                dragging = true
-            end)
-
-            local lerp = 0.45
-            local _last_text
-            local _focused = false
-
-            LPH_JIT_MAX(function()
-                con = Run.RenderStepped:Connect(function(dt)
-                    if not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
-                        dragging = false
-                    end
-                    local finalX = utility:Lerp(lastMouseX,mouse.X,lerp*(dt*60)) -- deltatime in case of slow framerates
-                    if dragging then
-                        local percent = math.clamp((finalX-slider.AbsolutePosition.X)/slider.AbsoluteSize.X,0,1)
-                        _self.Flags[info.Flag] = info.Min+((info.Max-info.Min)*percent)
-                    end
-                    if not info.AllowOutOfRange then
-                        _self.Flags[info.Flag] = math.clamp(_self.Flags[info.Flag],info.Min,info.Max)
-                    end
-                    _self.Flags[info.Flag] = utility:FormatNumber(_self.Flags[info.Flag],info.Digits)
-                    if dragging then
-                        coroutine.wrap(info.Callback)(_self.Flags[info.Flag])
-                    end
-                    local currentFlag = _self.Flags[info.Flag]
-                    if lastFlag~=currentFlag then
-                        inner.Size = UDim2.fromScale(math.clamp((currentFlag-info.Min)/(info.Max-info.Min),0,1),1)
-                        lastFlag = currentFlag
-                        input.Text = currentFlag
-                    end
-                    lastMouseX = finalX
-                    if _focused == false then
-                        _last_text = input.Text
-                    end
-                end)
-            end)()
-            table.insert(_self._connections,con)
-
-            input.Focused:Connect(function()
-                _focused = true
-            end)
-    
-            input.FocusLost:Connect(function(enterPressed)
-                local newValue
-                if enterPressed then
-                    local text = input.Text
-                    local num = tonumber(text)
-                    if num then
-                        if not info.AllowOutOfRange then
-                            num = math.clamp(num,info.Min,info.Max)
-                        end
-                        input.Text = utility:FormatNumber(num,info.Digits)
-                        newValue = num
-                        _self.Flags[info.Flag] = newValue
-                    else
-                        input.Text = _last_text
-                    end
-                else
-                    input.Text = _last_text
-                end
-    
-                _focused = false
-            end)
-        end
-
-        info.WarningIcon = info.WarningIcon or Library.Icons.Warning
-        element.Title.Warning.Image = "http://www.roblox.com/asset/?id="..info.WarningIcon
-        if info.Warning then
-            element.Title.Warning.ImageColor3 = Color3.new(1,1,1)
-            element.Title.Warning.Visible = true
-            local hint = utility:CreateHint()
-            hint.Value = info.Warning
-            hint.Parent = element.Title.Warning
-        end
-
-        element.Title.Main.Title.Text = info.Name
-        element.Name = string.rep("_",elementNum)..info.Name
-        element.Parent = section.holder.Contents
-    end
-    function Element.CreateSliderToggle(section,info)
-        local _self = section._self
-        -- Requirements
-        if info.Flag then
-            warn("SliderToggle does not have a 'Flag' argument, as it instead has two flags titled 'SliderFlag' and 'ToggleFlag'. Please fix your script.")
-        end
-        utility:Requirement(type(info)=="table","Info must be a table!")
-        utility:Requirement(info.Name,"Missing name argument")
-        utility:Requirement(info.SliderFlag,"Missing slider flag argument")
-        utility:Requirement(info.ToggleFlag,"Missing toggle flag argument")
-        utility:Requirement(info.Min,"Missing min argument")
-        utility:Requirement(info.Max,"Missing max argument")
-        utility:Requirement(info.Max>info.Min,"Max must be larger than min")
-
-        if _self._usedFlags[info.SliderFlag] then
-            warn("Slider flag must have unique name!")
-            return
-        else
-            _self._usedFlags[info.SliderFlag] = true
-        end
-
-        if _self._usedFlags[info.ToggleFlag] then
-            warn("Toggle flag must have unique name!")
-            return
-        else
-            _self._usedFlags[info.ToggleFlag] = true
-        end
-
-        info.SliderCallback = info.SliderCallback or utility.BlankFunction
-        info.ToggleCallback = info.ToggleCallback or utility.BlankFunction
-
-        if info.SliderDefault==nil then
-            info.SliderDefault = info.Min
-        end
-        if info.ToggleDefault==nil then
-            info.ToggleDefault = false
-        end
-        if info.AllowOutOfRange==nil then
-            info.AllowOutOfRange = false
-        end
-        if info.Digits==nil then
-            info.Digits = 0
-        end
-
-        if _self.Flags[info.SliderFlag]==nil then
-            _self.Flags[info.SliderFlag] = info.SliderDefault
-        end
-        if _self.Flags[info.ToggleFlag]==nil then
-            _self.Flags[info.ToggleFlag] = info.ToggleDefault
-        end
-
-        if info.SavingDisabled then
-            _self.Flags[info.SliderFlag] = info.SliderDefault
-            _self.Flags[info.ToggleFlag] = info.ToggleDefault
-        end
-
-        if info.CallbackOnCreation then
-            coroutine.wrap(info.SliderCallback)(_self.Flags[info.SliderFlag])
-            coroutine.wrap(info.ToggleCallback)(_self.Flags[info.ToggleFlag])
-        end
-
-        section.elementNum = section.elementNum+1
-
-        local elementNum = section.elementNum
-
-        local function createElement()
-            -- Generated using RoadToGlory's Converter v1.1 (RoadToGlory#9879)
-            local Converted = {
-                ["_2_SliderToggle"] = Instance.new("Frame");
-                ["_UICorner"] = Instance.new("UICorner");
-                ["_Slider"] = Instance.new("ImageLabel");
-                ["_Slider1"] = Instance.new("ImageLabel");
-                ["_Theme"] = Instance.new("StringValue");
-                ["_Category"] = Instance.new("StringValue");
-                ["_Ignore"] = Instance.new("BoolValue");
-                ["_Theme1"] = Instance.new("StringValue");
-                ["_Category1"] = Instance.new("StringValue");
-                ["_Ignore1"] = Instance.new("BoolValue");
-                ["_Input"] = Instance.new("TextBox");
-                ["_Toggle"] = Instance.new("Frame");
-                ["_UICorner1"] = Instance.new("UICorner");
-                ["_UIStroke"] = Instance.new("UIStroke");
-                ["_Theme2"] = Instance.new("StringValue");
-                ["_Category2"] = Instance.new("StringValue");
-                ["_Ignore2"] = Instance.new("BoolValue");
-                ["_ImageLabel"] = Instance.new("ImageLabel");
-                ["_Theme3"] = Instance.new("StringValue");
-                ["_Category3"] = Instance.new("StringValue");
-                ["_Ignore3"] = Instance.new("BoolValue");
-                ["_Theme4"] = Instance.new("StringValue");
-                ["_Category4"] = Instance.new("StringValue");
-                ["_Ignore4"] = Instance.new("BoolValue");
-                ["_Title"] = Instance.new("Frame");
-                ["_Main"] = Instance.new("Frame");
-                ["_Title1"] = Instance.new("TextLabel");
-                ["_Theme5"] = Instance.new("StringValue");
-                ["_Category5"] = Instance.new("StringValue");
-                ["_Ignore5"] = Instance.new("BoolValue");
-                ["_Warning"] = Instance.new("ImageLabel");
-                ["_Theme6"] = Instance.new("StringValue");
-                ["_Category6"] = Instance.new("StringValue");
-                ["_Ignore6"] = Instance.new("BoolValue");
-                ["_UIListLayout"] = Instance.new("UIListLayout");
-                ["_Theme7"] = Instance.new("StringValue");
-                ["_Category7"] = Instance.new("StringValue");
-                ["_Ignore7"] = Instance.new("BoolValue");
-                ["_Element"] = Instance.new("StringValue");
-            }
-
-            --Properties
-
-            Converted["_2_SliderToggle"].BackgroundColor3 = Color3.fromRGB(28.000000230968, 28.000000230968, 28.000000230968)
-            Converted["_2_SliderToggle"].BorderColor3 = Color3.fromRGB(27.000000290572643, 42.000001296401024, 53.00000064074993)
-            Converted["_2_SliderToggle"].Position = UDim2.new(0, 0, 0.627714336, 0)
-            Converted["_2_SliderToggle"].Size = UDim2.new(1, 0, 0, 54)
-            Converted["_2_SliderToggle"].Name = "SliderToggle"
-
-            Converted["_UICorner"].CornerRadius = UDim.new(0, 4)
-            Converted["_UICorner"].Parent = Converted["_2_SliderToggle"]
-
-            Converted["_Slider"].Image = "rbxassetid://10261338527"
-            Converted["_Slider"].ImageColor3 = Color3.fromRGB(18.000000827014446, 18.000000827014446, 18.000000827014446)
-            Converted["_Slider"].ScaleType = Enum.ScaleType.Slice
-            Converted["_Slider"].SliceCenter = Rect.new(100, 100, 100, 100)
-            Converted["_Slider"].AnchorPoint = Vector2.new(0, 1)
-            Converted["_Slider"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Slider"].BackgroundTransparency = 1
-            Converted["_Slider"].Position = UDim2.new(0, 9, 0.761503458, 0)
-            Converted["_Slider"].Size = UDim2.new(1, -45, 0, 4)
-            Converted["_Slider"].Name = "Slider"
-            Converted["_Slider"].Parent = Converted["_2_SliderToggle"]
-
-            Converted["_Slider1"].Image = "rbxassetid://10261338527"
-            Converted["_Slider1"].ImageColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Slider1"].ScaleType = Enum.ScaleType.Slice
-            Converted["_Slider1"].SliceCenter = Rect.new(100, 100, 100, 100)
-            Converted["_Slider1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Slider1"].BackgroundTransparency = 1
-            Converted["_Slider1"].Size = UDim2.new(0.5, 0, 1, 0)
-            Converted["_Slider1"].Name = "Slider"
-            Converted["_Slider1"].Parent = Converted["_Slider"]
-
-            Converted["_Theme"].Value = "ImageColor3"
-            Converted["_Theme"].Name = "Theme"
-            Converted["_Theme"].Parent = Converted["_Slider1"]
-
-            Converted["_Category"].Value = "Symbols"
-            Converted["_Category"].Name = "Category"
-            Converted["_Category"].Parent = Converted["_Theme"]
-
-            Converted["_Ignore"].Name = "Ignore"
-            Converted["_Ignore"].Parent = Converted["_Theme"]
-
-            Converted["_Theme1"].Value = "ImageColor3"
-            Converted["_Theme1"].Name = "Theme"
-            Converted["_Theme1"].Parent = Converted["_Slider"]
-
-            Converted["_Category1"].Value = "Background"
-            Converted["_Category1"].Name = "Category"
-            Converted["_Category1"].Parent = Converted["_Theme1"]
-
-            Converted["_Ignore1"].Name = "Ignore"
-            Converted["_Ignore1"].Parent = Converted["_Theme1"]
-
-            Converted["_Input"].Font = Enum.Font.GothamMedium
-            Converted["_Input"].PlaceholderColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Input"].Text = "0"
-            Converted["_Input"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Input"].TextSize = 14
-            Converted["_Input"].TextTruncate = Enum.TextTruncate.AtEnd
-            Converted["_Input"].TextXAlignment = Enum.TextXAlignment.Right
-            Converted["_Input"].AnchorPoint = Vector2.new(1, 0.5)
-            Converted["_Input"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Input"].BackgroundTransparency = 1
-            Converted["_Input"].Position = UDim2.new(0.999999881, -9, 0, 17)
-            Converted["_Input"].Size = UDim2.new(0.350198835, -45, 0, 14)
-            Converted["_Input"].Name = "Input"
-            Converted["_Input"].Parent = Converted["_2_SliderToggle"]
-
-            Converted["_Toggle"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_Toggle"].BackgroundColor3 = Color3.fromRGB(28.000000230968, 28.000000230968, 28.000000230968)
-            Converted["_Toggle"].Position = UDim2.new(1, -14, 0.699999988, 0)
-            Converted["_Toggle"].Size = UDim2.new(0, 17, 0, 17)
-            Converted["_Toggle"].Name = "Toggle"
-            Converted["_Toggle"].Parent = Converted["_2_SliderToggle"]
-
-            Converted["_UICorner1"].CornerRadius = UDim.new(0, 3)
-            Converted["_UICorner1"].Parent = Converted["_Toggle"]
-
-            Converted["_UIStroke"].Color = Color3.fromRGB(84.00000259280205, 84.00000259280205, 84.00000259280205)
-            Converted["_UIStroke"].Parent = Converted["_Toggle"]
-
-            Converted["_Theme2"].Value = "Color"
-            Converted["_Theme2"].Name = "Theme"
-            Converted["_Theme2"].Parent = Converted["_UIStroke"]
-
-            Converted["_Category2"].Value = "ToggleOutline"
-            Converted["_Category2"].Name = "Category"
-            Converted["_Category2"].Parent = Converted["_Theme2"]
-
-            Converted["_Ignore2"].Name = "Ignore"
-            Converted["_Ignore2"].Parent = Converted["_Theme2"]
-
-            Converted["_ImageLabel"].Image = "http://www.roblox.com/asset/?id=10954923256"
-            Converted["_ImageLabel"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_ImageLabel"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_ImageLabel"].BackgroundTransparency = 1
-            Converted["_ImageLabel"].Position = UDim2.new(0.5, 0, 0.5, 0)
-            Converted["_ImageLabel"].Parent = Converted["_Toggle"]
-
-            Converted["_Theme3"].Value = "ImageColor3"
-            Converted["_Theme3"].Name = "Theme"
-            Converted["_Theme3"].Parent = Converted["_ImageLabel"]
-
-            Converted["_Category3"].Value = "SymbolSelect"
-            Converted["_Category3"].Name = "Category"
-            Converted["_Category3"].Parent = Converted["_Theme3"]
-
-            Converted["_Ignore3"].Name = "Ignore"
-            Converted["_Ignore3"].Parent = Converted["_Theme3"]
-
-            Converted["_Theme4"].Value = "BackgroundColor3"
-            Converted["_Theme4"].Name = "Theme"
-            Converted["_Theme4"].Parent = Converted["_Toggle"]
-
-            Converted["_Category4"].Value = "Element"
-            Converted["_Category4"].Name = "Category"
-            Converted["_Category4"].Parent = Converted["_Theme4"]
-
-            Converted["_Ignore4"].Name = "Ignore"
-            Converted["_Ignore4"].Parent = Converted["_Theme4"]
-
-            Converted["_Title"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Title"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title"].BackgroundTransparency = 1
-            Converted["_Title"].Position = UDim2.new(0, 7, 0, 17)
-            Converted["_Title"].Size = UDim2.new(0.764999986, -45, 0, 14)
-            Converted["_Title"].Name = "Title"
-            Converted["_Title"].Parent = Converted["_2_SliderToggle"]
-
-            Converted["_Main"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Main"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Main"].BackgroundTransparency = 1
-            Converted["_Main"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Main"].Name = "Main"
-            Converted["_Main"].Parent = Converted["_Title"]
-
-            Converted["_Title1"].Font = Enum.Font.GothamMedium
-            Converted["_Title1"].Text = "Slider Toggle"
-            Converted["_Title1"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Title1"].TextSize = 14
-            Converted["_Title1"].TextTruncate = Enum.TextTruncate.AtEnd
-            Converted["_Title1"].TextWrapped = true
-            Converted["_Title1"].TextXAlignment = Enum.TextXAlignment.Left
-            Converted["_Title1"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Title1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title1"].BackgroundTransparency = 1
-            Converted["_Title1"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Title1"].Name = "Title"
-            Converted["_Title1"].Parent = Converted["_Main"]
-
-            Converted["_Theme5"].Value = "TextColor3"
-            Converted["_Theme5"].Name = "Theme"
-            Converted["_Theme5"].Parent = Converted["_Title1"]
-
-            Converted["_Category5"].Value = "Symbols"
-            Converted["_Category5"].Name = "Category"
-            Converted["_Category5"].Parent = Converted["_Theme5"]
-
-            Converted["_Ignore5"].Name = "Ignore"
-            Converted["_Ignore5"].Parent = Converted["_Theme5"]
-
-            Converted["_Warning"].Image = "http://www.roblox.com/asset/?id=10969141992"
-            Converted["_Warning"].ImageColor3 = Color3.fromRGB(255, 249.0000155568123, 53.000004440546036)
-            Converted["_Warning"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Warning"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Warning"].BackgroundTransparency = 1
-            Converted["_Warning"].Size = UDim2.new(0, 16, 0, 16)
-            Converted["_Warning"].Visible = false
-            Converted["_Warning"].Name = "Warning"
-            Converted["_Warning"].Parent = Converted["_Title"]
-
-            Converted["_Theme6"].Value = "ImageColor3"
-            Converted["_Theme6"].Name = "Theme"
-            Converted["_Theme6"].Parent = Converted["_Warning"]
-
-            Converted["_Category6"].Value = "Warning"
-            Converted["_Category6"].Name = "Category"
-            Converted["_Category6"].Parent = Converted["_Theme6"]
-
-            Converted["_Ignore6"].Name = "Ignore"
-            Converted["_Ignore6"].Parent = Converted["_Theme6"]
-
-            Converted["_UIListLayout"].Padding = UDim.new(0, 2)
-            Converted["_UIListLayout"].FillDirection = Enum.FillDirection.Horizontal
-            Converted["_UIListLayout"].SortOrder = Enum.SortOrder.LayoutOrder
-            Converted["_UIListLayout"].VerticalAlignment = Enum.VerticalAlignment.Bottom
-            Converted["_UIListLayout"].Parent = Converted["_Title"]
-
-            Converted["_Theme7"].Value = "BackgroundColor3"
-            Converted["_Theme7"].Name = "Theme"
-            Converted["_Theme7"].Parent = Converted["_2_SliderToggle"]
-
-            Converted["_Category7"].Value = "Element"
-            Converted["_Category7"].Name = "Category"
-            Converted["_Category7"].Parent = Converted["_Theme7"]
-
-            Converted["_Ignore7"].Name = "Ignore"
-            Converted["_Ignore7"].Parent = Converted["_Theme7"]
-
-            Converted["_Element"].Value = "SliderToggle"
-            Converted["_Element"].Name = "Element"
-            Converted["_Element"].Parent = Converted["_2_SliderToggle"]
-
-            return Converted["_2_SliderToggle"]
-        end
-
-        local element = createElement()
-
-        do -- sliding
-            local slider = element.Slider
-            local inner = slider.Slider
-            local sliderButton = utility:CreateButtonObject(slider)
-            sliderButton.Size = UDim2.fromScale(1,3)
-            local input = element.Input
-
-            local dragging = false
-
-            local lastFlag = nil
-            local con
-            local lastMouseX = mouse.X
-
-            sliderButton.MouseButton1Down:Connect(function()
-                dragging = true
-            end)
-
-            local lerp = 0.45
-            local _last_text
-            local _focused = false
-
-            LPH_JIT_MAX(function()
-                con = Run.RenderStepped:Connect(function(dt)
-                    if not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
-                        dragging = false
-                    end
-                    local finalX = utility:Lerp(lastMouseX,mouse.X,lerp*(dt*60)) -- deltatime in case of slow framerates
-                    if dragging then
-                        local percent = math.clamp((finalX-slider.AbsolutePosition.X)/slider.AbsoluteSize.X,0,1)
-                        _self.Flags[info.SliderFlag] = info.Min+((info.Max-info.Min)*percent)
-                    end
-                    if not info.AllowOutOfRange then
-                        _self.Flags[info.SliderFlag] = math.clamp(_self.Flags[info.SliderFlag],info.Min,info.Max)
-                    end
-                    _self.Flags[info.SliderFlag] = utility:FormatNumber(_self.Flags[info.SliderFlag],info.Digits)
-                    if dragging then
-                        coroutine.wrap(info.SliderCallback)(_self.Flags[info.SliderFlag])
-                    end
-                    local currentFlag = _self.Flags[info.SliderFlag]
-                    if lastFlag~=currentFlag then
-                        inner.Size = UDim2.fromScale(math.clamp((currentFlag-info.Min)/(info.Max-info.Min),0,1),1)
-                        lastFlag = currentFlag
-                        input.Text = currentFlag
-                    end
-                    lastMouseX = finalX
-                    if _focused == false then
-                        _last_text = input.Text
-                    end
-                end)
-            end)()
-            table.insert(_self._connections,con)
-
-            input.Focused:Connect(function()
-                _focused = true
-            end)
-    
-            input.FocusLost:Connect(function(enterPressed)
-                local newValue
-                if enterPressed then
-                    local text = input.Text
-                    local num = tonumber(text)
-                    if num then
-                        if not info.AllowOutOfRange then
-                            num = math.clamp(num,info.Min,info.Max)
-                        end
-                        input.Text = utility:FormatNumber(num,info.Digits)
-                        newValue = num
-                        _self.Flags[info.SliderFlag] = newValue
-                    else
-                        input.Text = _last_text
-                    end
-                else
-                    input.Text = _last_text
-                end
-    
-                _focused = false
-            end)
-        end
-
-        do -- toggling
-            local toggle = element.Toggle
-            local img = toggle.ImageLabel
-
-            local toggleBtn = utility:CreateButtonObject(toggle)
-
-            local tween1,tween2
-
-            toggleBtn.Activated:Connect(function()
-                _self.Flags[info.ToggleFlag] = not _self.Flags[info.ToggleFlag]
-                coroutine.wrap(info.ToggleCallback)(_self.Flags[info.ToggleFlag])
-            end)
-
-            local bigButton = utility:CreateButtonObject(element)
-            bigButton.ZIndex = 0
-            bigButton.Activated:Connect(function()
-                utility:DoClickEffect(element)
-                _self.Flags[info.ToggleFlag] = not _self.Flags[info.ToggleFlag]
-                coroutine.wrap(info.ToggleCallback)(_self.Flags[info.ToggleFlag])
-            end)
-
-            local tweenInfo = TweenInfo.new(0.1,Enum.EasingStyle.Sine,Enum.EasingDirection.In,0,false,0)
-
-            local lastFlag = nil
-            local con
-            LPH_JIT_MAX(function()
-                con = Run.RenderStepped:Connect(function()
-                    local currentFlag = _self.Flags[info.ToggleFlag]
-
-                    local imageGoalSize = currentFlag and UDim2.fromScale(0.9,0.9) or UDim2.fromScale(0,0)
-                    local backgroundGoalColor = currentFlag and _self.color or Color3.fromRGB(28, 28, 28)
-    
-                    if lastFlag==nil then
-                        toggle.BackgroundColor3 = backgroundGoalColor
-                        img.Size = imageGoalSize
-                    elseif lastFlag~=currentFlag then
-                        pcall(function()
-                            tween1:Disconnect()
-                            tween1:Destroy()
-                        end)
-                        pcall(function()
-                            tween2:Disconnect()
-                            tween2:Destroy()
-                        end)
-                        tween1 = TS:Create(toggle,tweenInfo,{
-                            ["BackgroundColor3"] = backgroundGoalColor
-                        })
-                        tween2 = TS:Create(img,tweenInfo,{
-                            ["Size"] = imageGoalSize
-                        })
-                        tween1:Play()
-                        tween2:Play()
-                    end
-                    lastFlag = currentFlag
-                end)
-            end)()
-            table.insert(_self._connections,con)
-        end
-
-        info.WarningIcon = info.WarningIcon or Library.Icons.Warning
-        element.Title.Warning.Image = "http://www.roblox.com/asset/?id="..info.WarningIcon
-        if info.Warning then
-            element.Title.Warning.ImageColor3 = Color3.new(1,1,1)
-            element.Title.Warning.Visible = true
-            local hint = utility:CreateHint()
-            hint.Value = info.Warning
-            hint.Parent = element.Title.Warning
-        end
-
-        element.Toggle.ImageLabel.ImageColor3 = utility:GetTextContrast(_self.color)
-        element.Title.Main.Title.Text = info.Name
-        element.Name = string.rep("_",elementNum)..info.Name
-        element.Parent = section.holder.Contents
-    end
-    function Element.CreateParagraph(section,info)
-        local _self = section._self
-        -- Requirements
-        utility:Requirement(type(info)=="table","Info must be a table!")
-        utility:Requirement(info.Content,"Missing content argument")
-
-        section.elementNum = section.elementNum+1
-
-        local elementNum = section.elementNum
-
-        local function createElement()
-            -- Generated using RoadToGlory's Converter v1.1 (RoadToGlory#9879)
-            local Converted = {
-                ["_3_Paragraph"] = Instance.new("Frame");
-                ["_UICorner"] = Instance.new("UICorner");
-                ["_0_padding"] = Instance.new("Frame");
-                ["_padding"] = Instance.new("Frame");
-                ["_Title"] = Instance.new("TextLabel");
-                ["_Theme"] = Instance.new("StringValue");
-                ["_Category"] = Instance.new("StringValue");
-                ["_Ignore"] = Instance.new("BoolValue");
-                ["_UIListLayout"] = Instance.new("UIListLayout");
-                ["_Theme1"] = Instance.new("StringValue");
-                ["_Category1"] = Instance.new("StringValue");
-                ["_Ignore1"] = Instance.new("BoolValue");
-                ["_Element"] = Instance.new("StringValue");
-            }
-
-            --Properties
-
-            Converted["_3_Paragraph"].AutomaticSize = Enum.AutomaticSize.Y
-            Converted["_3_Paragraph"].BackgroundColor3 = Color3.fromRGB(28.000000230968, 28.000000230968, 28.000000230968)
-            Converted["_3_Paragraph"].BorderColor3 = Color3.fromRGB(27.000000290572643, 42.000001296401024, 53.00000064074993)
-            Converted["_3_Paragraph"].Position = UDim2.new(0, 0, 0.627714336, 0)
-            Converted["_3_Paragraph"].Size = UDim2.new(1, 0, 0, 1)
-            Converted["_3_Paragraph"].Name = "3_Paragraph"
-
-            Converted["_UICorner"].CornerRadius = UDim.new(0, 4)
-            Converted["_UICorner"].Parent = Converted["_3_Paragraph"]
-
-            Converted["_0_padding"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_0_padding"].BackgroundTransparency = 1
-            Converted["_0_padding"].Size = UDim2.new(1, 0, 0, 1)
-            Converted["_0_padding"].Name = "0_padding"
-            Converted["_0_padding"].Parent = Converted["_3_Paragraph"]
-
-            Converted["_padding"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_padding"].BackgroundTransparency = 1
-            Converted["_padding"].Size = UDim2.new(1, 0, 0, 1)
-            Converted["_padding"].Name = "padding"
-            Converted["_padding"].Parent = Converted["_3_Paragraph"]
-
-            Converted["_Title"].Font = Enum.Font.GothamMedium
-            Converted["_Title"].RichText = true
-            Converted["_Title"].Text = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum."
-            Converted["_Title"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Title"].TextSize = 14
-            Converted["_Title"].TextWrapped = true
-            Converted["_Title"].TextXAlignment = Enum.TextXAlignment.Left
-            Converted["_Title"].AnchorPoint = Vector2.new(0.5, 0)
-            Converted["_Title"].AutomaticSize = Enum.AutomaticSize.Y
-            Converted["_Title"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title"].BackgroundTransparency = 1
-            Converted["_Title"].Position = UDim2.new(0.5, 0, 0, 0)
-            Converted["_Title"].Size = UDim2.new(1, -18, 0, 1)
-            Converted["_Title"].Name = "Title"
-            Converted["_Title"].Parent = Converted["_3_Paragraph"]
-
-            Converted["_Theme"].Value = "TextColor3"
-            Converted["_Theme"].Name = "Theme"
-            Converted["_Theme"].Parent = Converted["_Title"]
-
-            Converted["_Category"].Value = "Symbols"
-            Converted["_Category"].Name = "Category"
-            Converted["_Category"].Parent = Converted["_Theme"]
-
-            Converted["_Ignore"].Name = "Ignore"
-            Converted["_Ignore"].Parent = Converted["_Theme"]
-
-            Converted["_UIListLayout"].Padding = UDim.new(0, 9)
-            Converted["_UIListLayout"].HorizontalAlignment = Enum.HorizontalAlignment.Center
-            Converted["_UIListLayout"].Parent = Converted["_3_Paragraph"]
-
-            Converted["_Theme1"].Value = "BackgroundColor3"
-            Converted["_Theme1"].Name = "Theme"
-            Converted["_Theme1"].Parent = Converted["_3_Paragraph"]
-
-            Converted["_Category1"].Value = "Element"
-            Converted["_Category1"].Name = "Category"
-            Converted["_Category1"].Parent = Converted["_Theme1"]
-
-            Converted["_Ignore1"].Name = "Ignore"
-            Converted["_Ignore1"].Parent = Converted["_Theme1"]
-
-            Converted["_Element"].Value = "Paragraph"
-            Converted["_Element"].Name = "Element"
-            Converted["_Element"].Parent = Converted["_3_Paragraph"]
-
-            return Converted["_3_Paragraph"]
-        end
-
-        local element = createElement()
-
-        local p = element.Title
-        p.Text = info.Content
-
-        element.Name = string.rep("_",elementNum).."Paragraph"
-        element.Parent = section.holder.Contents
-
-        return {
-            ["Set"] = function(e)
-                p.Text = e
-            end;
-            ["obj"] = p;
-        }
-    end
-    function Element.CreateButton(section,info)
-        local _self = section._self
-        -- Requirements
-        utility:Requirement(type(info)=="table","Info must be a table!")
-        utility:Requirement(info.Name,"Missing name argument")
-
-        info.Callback = info.Callback or utility.BlankFunction
-
-        section.elementNum = section.elementNum+1
-
-        local elementNum = section.elementNum
-
-        local function createElement()
-            -- Generated using RoadToGlory's Converter v1.1 (RoadToGlory#9879)
-            local Converted = {
-                ["_4_Button"] = Instance.new("Frame");
-                ["_UICorner"] = Instance.new("UICorner");
-                ["_Image"] = Instance.new("Frame");
-                ["_UICorner1"] = Instance.new("UICorner");
-                ["_ImageLabel"] = Instance.new("ImageLabel");
-                ["_Theme"] = Instance.new("StringValue");
-                ["_Category"] = Instance.new("StringValue");
-                ["_Ignore"] = Instance.new("BoolValue");
-                ["_Title"] = Instance.new("Frame");
-                ["_Main"] = Instance.new("Frame");
-                ["_Title1"] = Instance.new("TextLabel");
-                ["_Theme1"] = Instance.new("StringValue");
-                ["_Category1"] = Instance.new("StringValue");
-                ["_Ignore1"] = Instance.new("BoolValue");
-                ["_Warning"] = Instance.new("ImageLabel");
-                ["_Theme2"] = Instance.new("StringValue");
-                ["_Category2"] = Instance.new("StringValue");
-                ["_Ignore2"] = Instance.new("BoolValue");
-                ["_UIListLayout"] = Instance.new("UIListLayout");
-                ["_Theme3"] = Instance.new("StringValue");
-                ["_Category3"] = Instance.new("StringValue");
-                ["_Ignore3"] = Instance.new("BoolValue");
-                ["_Shade"] = Instance.new("Frame");
-                ["_UICorner2"] = Instance.new("UICorner");
-                ["_Theme4"] = Instance.new("StringValue");
-                ["_Category4"] = Instance.new("StringValue");
-                ["_Ignore4"] = Instance.new("BoolValue");
-                ["_Element"] = Instance.new("StringValue");
-            }
-
-            --Properties
-
-            Converted["_4_Button"].BackgroundColor3 = Color3.fromRGB(28.000000230968, 28.000000230968, 28.000000230968)
-            Converted["_4_Button"].Size = UDim2.new(1, 0, 0, 35)
-            Converted["_4_Button"].Name = "Button"
-
-            Converted["_UICorner"].CornerRadius = UDim.new(0, 4)
-            Converted["_UICorner"].Parent = Converted["_4_Button"]
-
-            Converted["_Image"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_Image"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Image"].BackgroundTransparency = 1
-            Converted["_Image"].Position = UDim2.new(1, -18, 0.5, 0)
-            Converted["_Image"].Size = UDim2.new(0, 24, 0, 24)
-            Converted["_Image"].Name = "Image"
-            Converted["_Image"].Parent = Converted["_4_Button"]
-
-            Converted["_UICorner1"].CornerRadius = UDim.new(0, 3)
-            Converted["_UICorner1"].Parent = Converted["_Image"]
-
-            Converted["_ImageLabel"].Image = "http://www.roblox.com/asset/?id=10967996591"
-            Converted["_ImageLabel"].ImageColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_ImageLabel"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_ImageLabel"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_ImageLabel"].BackgroundTransparency = 1
-            Converted["_ImageLabel"].Position = UDim2.new(0.5, 0, 0.5, 0)
-            Converted["_ImageLabel"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_ImageLabel"].Parent = Converted["_Image"]
-
-            Converted["_Theme"].Value = "ImageColor3"
-            Converted["_Theme"].Name = "Theme"
-            Converted["_Theme"].Parent = Converted["_ImageLabel"]
-
-            Converted["_Category"].Value = "Symbols"
-            Converted["_Category"].Name = "Category"
-            Converted["_Category"].Parent = Converted["_Theme"]
-
-            Converted["_Ignore"].Name = "Ignore"
-            Converted["_Ignore"].Parent = Converted["_Theme"]
-
-            Converted["_Title"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Title"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title"].BackgroundTransparency = 1
-            Converted["_Title"].Position = UDim2.new(-0, 9, 0.5, 0)
-            Converted["_Title"].Size = UDim2.new(1, -45, 0, 14)
-            Converted["_Title"].Name = "Title"
-            Converted["_Title"].Parent = Converted["_4_Button"]
-
-            Converted["_Main"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Main"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Main"].BackgroundTransparency = 1
-            Converted["_Main"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Main"].Name = "Main"
-            Converted["_Main"].Parent = Converted["_Title"]
-
-            Converted["_Title1"].Font = Enum.Font.GothamMedium
-            Converted["_Title1"].Text = "Button"
-            Converted["_Title1"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Title1"].TextSize = 14
-            Converted["_Title1"].TextTruncate = Enum.TextTruncate.AtEnd
-            Converted["_Title1"].TextWrapped = true
-            Converted["_Title1"].TextXAlignment = Enum.TextXAlignment.Left
-            Converted["_Title1"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Title1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title1"].BackgroundTransparency = 1
-            Converted["_Title1"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Title1"].Name = "Title"
-            Converted["_Title1"].Parent = Converted["_Main"]
-
-            Converted["_Theme1"].Value = "TextColor3"
-            Converted["_Theme1"].Name = "Theme"
-            Converted["_Theme1"].Parent = Converted["_Title1"]
-
-            Converted["_Category1"].Value = "Symbols"
-            Converted["_Category1"].Name = "Category"
-            Converted["_Category1"].Parent = Converted["_Theme1"]
-
-            Converted["_Ignore1"].Name = "Ignore"
-            Converted["_Ignore1"].Parent = Converted["_Theme1"]
-
-            Converted["_Warning"].Image = "http://www.roblox.com/asset/?id=10969141992"
-            Converted["_Warning"].ImageColor3 = Color3.fromRGB(255, 249.0000155568123, 53.000004440546036)
-            Converted["_Warning"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Warning"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Warning"].BackgroundTransparency = 1
-            Converted["_Warning"].Size = UDim2.new(0, 16, 0, 16)
-            Converted["_Warning"].Visible = false
-            Converted["_Warning"].Name = "Warning"
-            Converted["_Warning"].Parent = Converted["_Title"]
-
-            Converted["_Theme2"].Value = "ImageColor3"
-            Converted["_Theme2"].Name = "Theme"
-            Converted["_Theme2"].Parent = Converted["_Warning"]
-
-            Converted["_Category2"].Value = "Warning"
-            Converted["_Category2"].Name = "Category"
-            Converted["_Category2"].Parent = Converted["_Theme2"]
-
-            Converted["_Ignore2"].Name = "Ignore"
-            Converted["_Ignore2"].Parent = Converted["_Theme2"]
-
-            Converted["_UIListLayout"].Padding = UDim.new(0, 2)
-            Converted["_UIListLayout"].FillDirection = Enum.FillDirection.Horizontal
-            Converted["_UIListLayout"].SortOrder = Enum.SortOrder.LayoutOrder
-            Converted["_UIListLayout"].VerticalAlignment = Enum.VerticalAlignment.Bottom
-            Converted["_UIListLayout"].Parent = Converted["_Title"]
-
-            Converted["_Theme3"].Value = "BackgroundColor3"
-            Converted["_Theme3"].Name = "Theme"
-            Converted["_Theme3"].Parent = Converted["_4_Button"]
-
-            Converted["_Category3"].Value = "Element"
-            Converted["_Category3"].Name = "Category"
-            Converted["_Category3"].Parent = Converted["_Theme3"]
-
-            Converted["_Ignore3"].Name = "Ignore"
-            Converted["_Ignore3"].Parent = Converted["_Theme3"]
-
-            Converted["_Shade"].BackgroundColor3 = Color3.fromRGB(67.00000360608101, 67.00000360608101, 67.00000360608101)
-            Converted["_Shade"].BackgroundTransparency = 1
-            Converted["_Shade"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_Shade"].Name = "Shade"
-            Converted["_Shade"].Parent = Converted["_4_Button"]
-
-            Converted["_UICorner2"].CornerRadius = UDim.new(0, 4)
-            Converted["_UICorner2"].Parent = Converted["_Shade"]
-
-            Converted["_Theme4"].Value = "BackgroundColor3"
-            Converted["_Theme4"].Name = "Theme"
-            Converted["_Theme4"].Parent = Converted["_Shade"]
-
-            Converted["_Category4"].Value = "Shade"
-            Converted["_Category4"].Name = "Category"
-            Converted["_Category4"].Parent = Converted["_Theme4"]
-
-            Converted["_Ignore4"].Name = "Ignore"
-            Converted["_Ignore4"].Parent = Converted["_Theme4"]
-
-            Converted["_Element"].Value = "Button"
-            Converted["_Element"].Name = "Element"
-            Converted["_Element"].Parent = Converted["_4_Button"]
-
-            return Converted["_4_Button"]
-        end
-
-        local element = createElement()
-
-        do -- button
-            local btn = utility:CreateButtonObject(element)
-            local shade = element.Shade
-            shade.ZIndex = -1
-
-            local goal = 0.9
-
-            btn.Activated:Connect(function()
-                utility:DoClickEffect(element)
-                coroutine.wrap(info.Callback)()
-            end)
-
-            local tweenInfo = TweenInfo.new(0.25,Enum.EasingStyle.Sine,Enum.EasingDirection.In,0,false,0)
-
-            local function isMouseHovering()
-                local mx,my = mouse.X,mouse.Y
-                local ap,as = element.AbsolutePosition,element.AbsoluteSize
-                return mx>ap.X and mx<(ap.X+as.X) and my>ap.Y and my<(ap.Y+as.Y)
-            end
-
-            local tween
-
-            local con
-            local last = nil
-            LPH_JIT_MAX(function()
-                con = mouse.Move:Connect(function()
-                    local hovering = isMouseHovering()
-
-                    if hovering ~= last then
-                        pcall(function()
-                            tween:Disconnect()
-                            tween:Destroy()
-                        end)
-                        tween = TS:Create(shade,tweenInfo,{
-                            ["BackgroundTransparency"] = hovering and goal or 1
-                        })
-                        tween:Play()
-                    end
-
-                    last = hovering
-                end)
-            end)()
-            table.insert(_self._connections,con)
-        end
-
-        info.WarningIcon = info.WarningIcon or Library.Icons.Warning
-        element.Title.Warning.Image = "http://www.roblox.com/asset/?id="..info.WarningIcon
-        if info.Warning then
-            element.Title.Warning.ImageColor3 = Color3.new(1,1,1)
-            element.Title.Warning.Visible = true
-            local hint = utility:CreateHint()
-            hint.Value = info.Warning
-            hint.Parent = element.Title.Warning
-        end
-
-        element.Title.Main.Title.Text = info.Name
-        element.Name = string.rep("_",elementNum)..info.Name
-        element.Parent = section.holder.Contents
-    end
-    function Element.CreateTextBox(section,info)
-        local _self = section._self
-        -- Requirements
-        utility:Requirement(type(info)=="table","Info must be a table!")
-        utility:Requirement(info.Name,"Missing name argument")
-        utility:Requirement(info.Flag,"Missing flag argument")
-
-        info.Callback = info.Callback or utility.BlankFunction
-        info.TabComplete = info.TabComplete or utility.BlankFunction
-        info.PlaceholderText = info.PlaceholderText or "No Text"
-        info.DefaultText = info.DefaultText or ""
-
-        if info.ClearTextOnFocus==nil then
-            info.ClearTextOnFocus = true
-        end
-
-        if _self._usedFlags[info.Flag] then
-            warn("Flag must have unique name!")
-            return
-        else
-            _self._usedFlags[info.Flag] = true
-        end
-
-        _self.Flags[info.Flag] = _self.Flags[info.Flag] or info.DefaultText
-
-        if info.SavingDisabled then
-            _self.Flags[info.Flag] = info.DefaultText
-        end
-
-        if info.CallbackOnCreation then
-            coroutine.wrap(info.Callback)(_self.Flags[info.Flag])
-        end
-
-        section.elementNum = section.elementNum+1
-
-        local elementNum = section.elementNum
-
-        local function createElement()
-            -- Generated using RoadToGlory's Converter v1.1 (RoadToGlory#9879)
-            local Converted = {
-                ["_5_Textbox"] = Instance.new("Frame");
-                ["_UICorner"] = Instance.new("UICorner");
-                ["_Input"] = Instance.new("Frame");
-                ["_Frame"] = Instance.new("Frame");
-                ["_UICorner1"] = Instance.new("UICorner");
-                ["_TextBox"] = Instance.new("TextBox");
-                ["_Theme"] = Instance.new("StringValue");
-                ["_Category"] = Instance.new("StringValue");
-                ["_Ignore"] = Instance.new("BoolValue");
-                ["_Theme1"] = Instance.new("StringValue");
-                ["_Category1"] = Instance.new("StringValue");
-                ["_Ignore1"] = Instance.new("BoolValue");
-                ["_0_padding"] = Instance.new("Frame");
-                ["_padding"] = Instance.new("Frame");
-                ["_UIListLayout"] = Instance.new("UIListLayout");
-                ["_Theme2"] = Instance.new("StringValue");
-                ["_Category2"] = Instance.new("StringValue");
-                ["_Ignore2"] = Instance.new("BoolValue");
-                ["_Title"] = Instance.new("Frame");
-                ["_Main"] = Instance.new("Frame");
-                ["_Title1"] = Instance.new("TextLabel");
-                ["_Theme3"] = Instance.new("StringValue");
-                ["_Category3"] = Instance.new("StringValue");
-                ["_Ignore3"] = Instance.new("BoolValue");
-                ["_Warning"] = Instance.new("ImageLabel");
-                ["_Theme4"] = Instance.new("StringValue");
-                ["_Category4"] = Instance.new("StringValue");
-                ["_Ignore4"] = Instance.new("BoolValue");
-                ["_UIListLayout1"] = Instance.new("UIListLayout");
-                ["_Theme5"] = Instance.new("StringValue");
-                ["_Category5"] = Instance.new("StringValue");
-                ["_Ignore5"] = Instance.new("BoolValue");
-                ["_Element"] = Instance.new("StringValue");
-            }
-
-            --Properties
-
-            Converted["_5_Textbox"].BackgroundColor3 = Color3.fromRGB(28.000000230968, 28.000000230968, 28.000000230968)
-            Converted["_5_Textbox"].Size = UDim2.new(1, 0, 0, 35)
-            Converted["_5_Textbox"].Name = "5_Textbox"
-
-            Converted["_UICorner"].CornerRadius = UDim.new(0, 4)
-            Converted["_UICorner"].Parent = Converted["_5_Textbox"]
-
-            Converted["_Input"].AnchorPoint = Vector2.new(1, 0.5)
-            Converted["_Input"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Input"].BackgroundTransparency = 1
-            Converted["_Input"].Position = UDim2.new(1.00000012, -10, 0.5, 0)
-            Converted["_Input"].Size = UDim2.new(0.557544649, 1, 0.649999976, 0)
-            Converted["_Input"].Name = "Input"
-            Converted["_Input"].Parent = Converted["_5_Textbox"]
-
-            Converted["_Frame"].AnchorPoint = Vector2.new(1, 0.5)
-            Converted["_Frame"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Frame"].BackgroundColor3 = Color3.fromRGB(18.000000827014446, 18.000000827014446, 18.000000827014446)
-            Converted["_Frame"].Position = UDim2.new(1, 0, 0.5, 0)
-            Converted["_Frame"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Frame"].Parent = Converted["_Input"]
-
-            Converted["_UICorner1"].CornerRadius = UDim.new(0, 4)
-            Converted["_UICorner1"].Parent = Converted["_Frame"]
-
-            Converted["_TextBox"].Font = Enum.Font.Gotham
-            Converted["_TextBox"].PlaceholderColor3 = Color3.fromRGB(165.00000536441803, 165.00000536441803, 165.00000536441803)
-            Converted["_TextBox"].PlaceholderText = "No Text"
-            Converted["_TextBox"].Text = ""
-            Converted["_TextBox"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_TextBox"].TextSize = 14
-            Converted["_TextBox"].TextWrapped = true
-            Converted["_TextBox"].TextXAlignment = Enum.TextXAlignment.Right
-            Converted["_TextBox"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_TextBox"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_TextBox"].BackgroundTransparency = 1
-            Converted["_TextBox"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_TextBox"].Parent = Converted["_Frame"]
-
-            Converted["_Theme"].Value = "TextColor3"
-            Converted["_Theme"].Name = "Theme"
-            Converted["_Theme"].Parent = Converted["_TextBox"]
-
-            Converted["_Category"].Value = "Symbols"
-            Converted["_Category"].Name = "Category"
-            Converted["_Category"].Parent = Converted["_Theme"]
-
-            Converted["_Ignore"].Name = "Ignore"
-            Converted["_Ignore"].Parent = Converted["_Theme"]
-
-            Converted["_Theme1"].Value = "PlaceholderColor3"
-            Converted["_Theme1"].Name = "Theme"
-            Converted["_Theme1"].Parent = Converted["_TextBox"]
-
-            Converted["_Category1"].Value = "Section"
-            Converted["_Category1"].Name = "Category"
-            Converted["_Category1"].Parent = Converted["_Theme1"]
-
-            Converted["_Ignore1"].Name = "Ignore"
-            Converted["_Ignore1"].Parent = Converted["_Theme1"]
-
-            Converted["_0_padding"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_0_padding"].BackgroundTransparency = 1
-            Converted["_0_padding"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_0_padding"].Name = "0_padding"
-            Converted["_0_padding"].Parent = Converted["_Frame"]
-
-            Converted["_padding"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_padding"].BackgroundTransparency = 1
-            Converted["_padding"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_padding"].Name = "padding"
-            Converted["_padding"].Parent = Converted["_Frame"]
-
-            Converted["_UIListLayout"].Padding = UDim.new(0, 6)
-            Converted["_UIListLayout"].FillDirection = Enum.FillDirection.Horizontal
-            Converted["_UIListLayout"].Parent = Converted["_Frame"]
-
-            Converted["_Theme2"].Value = "BackgroundColor3"
-            Converted["_Theme2"].Name = "Theme"
-            Converted["_Theme2"].Parent = Converted["_Frame"]
-
-            Converted["_Category2"].Value = "Background"
-            Converted["_Category2"].Name = "Category"
-            Converted["_Category2"].Parent = Converted["_Theme2"]
-
-            Converted["_Ignore2"].Name = "Ignore"
-            Converted["_Ignore2"].Parent = Converted["_Theme2"]
-
-            Converted["_Title"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Title"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title"].BackgroundTransparency = 1
-            Converted["_Title"].Position = UDim2.new(-0, 9, 0.5, 0)
-            Converted["_Title"].Size = UDim2.new(0.442000002, -45, 0, 14)
-            Converted["_Title"].Name = "Title"
-            Converted["_Title"].Parent = Converted["_5_Textbox"]
-
-            Converted["_Main"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Main"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Main"].BackgroundTransparency = 1
-            Converted["_Main"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Main"].Name = "Main"
-            Converted["_Main"].Parent = Converted["_Title"]
-
-            Converted["_Title1"].Font = Enum.Font.GothamMedium
-            Converted["_Title1"].Text = "Textbox Textbox Textbox Textbox Textbox"
-            Converted["_Title1"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Title1"].TextSize = 14
-            Converted["_Title1"].TextTruncate = Enum.TextTruncate.AtEnd
-            Converted["_Title1"].TextWrapped = true
-            Converted["_Title1"].TextXAlignment = Enum.TextXAlignment.Left
-            Converted["_Title1"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Title1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title1"].BackgroundTransparency = 1
-            Converted["_Title1"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Title1"].Name = "Title"
-            Converted["_Title1"].Parent = Converted["_Main"]
-
-            Converted["_Theme3"].Value = "TextColor3"
-            Converted["_Theme3"].Name = "Theme"
-            Converted["_Theme3"].Parent = Converted["_Title1"]
-
-            Converted["_Category3"].Value = "Symbols"
-            Converted["_Category3"].Name = "Category"
-            Converted["_Category3"].Parent = Converted["_Theme3"]
-
-            Converted["_Ignore3"].Name = "Ignore"
-            Converted["_Ignore3"].Parent = Converted["_Theme3"]
-
-            Converted["_Warning"].Image = "http://www.roblox.com/asset/?id=10969141992"
-            Converted["_Warning"].ImageColor3 = Color3.fromRGB(255, 249.0000155568123, 53.000004440546036)
-            Converted["_Warning"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Warning"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Warning"].BackgroundTransparency = 1
-            Converted["_Warning"].Size = UDim2.new(0, 16, 0, 16)
-            Converted["_Warning"].Visible = false
-            Converted["_Warning"].Name = "Warning"
-            Converted["_Warning"].Parent = Converted["_Title"]
-
-            Converted["_Theme4"].Value = "ImageColor3"
-            Converted["_Theme4"].Name = "Theme"
-            Converted["_Theme4"].Parent = Converted["_Warning"]
-
-            Converted["_Category4"].Value = "Warning"
-            Converted["_Category4"].Name = "Category"
-            Converted["_Category4"].Parent = Converted["_Theme4"]
-
-            Converted["_Ignore4"].Name = "Ignore"
-            Converted["_Ignore4"].Parent = Converted["_Theme4"]
-
-            Converted["_UIListLayout1"].Padding = UDim.new(0, 2)
-            Converted["_UIListLayout1"].FillDirection = Enum.FillDirection.Horizontal
-            Converted["_UIListLayout1"].SortOrder = Enum.SortOrder.LayoutOrder
-            Converted["_UIListLayout1"].VerticalAlignment = Enum.VerticalAlignment.Bottom
-            Converted["_UIListLayout1"].Parent = Converted["_Title"]
-
-            Converted["_Theme5"].Value = "BackgroundColor3"
-            Converted["_Theme5"].Name = "Theme"
-            Converted["_Theme5"].Parent = Converted["_5_Textbox"]
-
-            Converted["_Category5"].Value = "Element"
-            Converted["_Category5"].Name = "Category"
-            Converted["_Category5"].Parent = Converted["_Theme5"]
-
-            Converted["_Ignore5"].Name = "Ignore"
-            Converted["_Ignore5"].Parent = Converted["_Theme5"]
-
-            Converted["_Element"].Value = "Textbox"
-            Converted["_Element"].Name = "Element"
-            Converted["_Element"].Parent = Converted["_5_Textbox"]
-
-            return Converted["_5_Textbox"]
-        end
-
-        local element = createElement()
-
-        -- textbox
-        do
-            local textbox = element.Input.Frame.TextBox
-
-            textbox.ClearTextOnFocus = info.ClearTextOnFocus
-            textbox.PlaceholderText = info.PlaceholderText
-            textbox.Text = _self.Flags[info.Flag]
-
-            textbox.FocusLost:Connect(function(enterPressed)
-                local s,r = pcall(function()
-                    info.Callback(textbox.Text,enterPressed)
-                end)
-                if not s then
-                    warn("Callback error: "..r)
-                end
-                _self.Flags[info.Flag] = textbox.Text
-            end)
-
-            table.insert(_self._connections,UIS.InputBegan:Connect(function(input)
-                if textbox:IsFocused() and input.UserInputType==Enum.UserInputType.Keyboard and input.KeyCode==Enum.KeyCode.Tab then
-                    local result
-                    local s,r = pcall(function()
-                        result = info.TabComplete(textbox.Text)
-                    end)
-                    if not s then
-                        warn("Error in tab completion function: "..r)
-                        error()
-                    elseif (type(r)~="string" and r~=nil) then
-                        warn("TabComplete function must return a string")
-                        error()
-                    end
-                    local final = string.gsub(string.gsub(string.gsub(result or textbox.Text, "^%s+", ""), "%s+$", ""),"\t","")
-                    textbox.Text = result or textbox.Text
-                    textbox:GetPropertyChangedSignal("Text"):Wait()
-                    textbox.Text = textbox.Text:gsub("\t",""):gsub( '^%s+', '' ):gsub( '%s+$', '' )
-                end
-            end))
-        end
-
-        info.WarningIcon = info.WarningIcon or Library.Icons.Warning
-        element.Title.Warning.Image = "http://www.roblox.com/asset/?id="..info.WarningIcon
-        if info.Warning then
-            element.Title.Warning.ImageColor3 = Color3.new(1,1,1)
-            element.Title.Warning.Visible = true
-            local hint = utility:CreateHint()
-            hint.Value = info.Warning
-            hint.Parent = element.Title.Warning
-        end
-
-        element.Title.Main.Title.Text = info.Name
-        element.Name = string.rep("_",elementNum)..info.Name
-        element.Parent = section.holder.Contents
-    end
-    function Element.CreateInteractable(section,info)
-        local _self = section._self
-        -- Requirements
-        utility:Requirement(type(info)=="table","Info must be a table!")
-        utility:Requirement(info.Name,"Missing name argument")
-
-        info.Callback = info.Callback or utility.BlankFunction
-
-        section.elementNum = section.elementNum+1
-
-        local elementNum = section.elementNum
-
-        local function createElement()
-            -- Generated using RoadToGlory's Converter v1.1 (RoadToGlory#9879)
-            local Converted = {
-                ["_6_Interactable"] = Instance.new("Frame");
-                ["_UICorner"] = Instance.new("UICorner");
-                ["_Interactable"] = Instance.new("Frame");
-                ["_Frame"] = Instance.new("Frame");
-                ["_UICorner1"] = Instance.new("UICorner");
-                ["_0_padding"] = Instance.new("Frame");
-                ["_padding"] = Instance.new("Frame");
-                ["_UIListLayout"] = Instance.new("UIListLayout");
-                ["_Title"] = Instance.new("TextLabel");
-                ["_Theme"] = Instance.new("StringValue");
-                ["_Category"] = Instance.new("StringValue");
-                ["_Ignore"] = Instance.new("BoolValue");
-                ["_Theme1"] = Instance.new("StringValue");
-                ["_Category1"] = Instance.new("StringValue");
-                ["_Ignore1"] = Instance.new("BoolValue");
-                ["_Loading"] = Instance.new("Frame");
-                ["_UIAspectRatioConstraint"] = Instance.new("UIAspectRatioConstraint");
-                ["_Loading1"] = Instance.new("ImageLabel");
-                ["_Theme2"] = Instance.new("StringValue");
-                ["_Category2"] = Instance.new("StringValue");
-                ["_Ignore2"] = Instance.new("BoolValue");
-                ["_Title1"] = Instance.new("Frame");
-                ["_Main"] = Instance.new("Frame");
-                ["_Title2"] = Instance.new("TextLabel");
-                ["_Theme3"] = Instance.new("StringValue");
-                ["_Category3"] = Instance.new("StringValue");
-                ["_Ignore3"] = Instance.new("BoolValue");
-                ["_Warning"] = Instance.new("ImageLabel");
-                ["_Theme4"] = Instance.new("StringValue");
-                ["_Category4"] = Instance.new("StringValue");
-                ["_Ignore4"] = Instance.new("BoolValue");
-                ["_UIListLayout1"] = Instance.new("UIListLayout");
-                ["_Theme5"] = Instance.new("StringValue");
-                ["_Category5"] = Instance.new("StringValue");
-                ["_Ignore5"] = Instance.new("BoolValue");
-                ["_Element"] = Instance.new("StringValue");
-            }
-
-            --Properties
-
-            Converted["_6_Interactable"].BackgroundColor3 = Color3.fromRGB(28.000000230968, 28.000000230968, 28.000000230968)
-            Converted["_6_Interactable"].Size = UDim2.new(1, 0, 0, 35)
-            Converted["_6_Interactable"].Name = "6_Interactable"
-
-            Converted["_UICorner"].CornerRadius = UDim.new(0, 4)
-            Converted["_UICorner"].Parent = Converted["_6_Interactable"]
-
-            Converted["_Interactable"].AnchorPoint = Vector2.new(1, 0.5)
-            Converted["_Interactable"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Interactable"].BackgroundTransparency = 1
-            Converted["_Interactable"].ClipsDescendants = true
-            Converted["_Interactable"].Position = UDim2.new(1.00000012, -10, 0.5, 0)
-            Converted["_Interactable"].Size = UDim2.new(0.573000014, 0, 0.649999976, 0)
-            Converted["_Interactable"].Name = "Interactable"
-            Converted["_Interactable"].Parent = Converted["_6_Interactable"]
-
-            Converted["_Frame"].AnchorPoint = Vector2.new(1, 0.5)
-            Converted["_Frame"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Frame"].BackgroundColor3 = Color3.fromRGB(164.00000542402267, 53.00000064074993, 90.00000223517418)
-            Converted["_Frame"].Position = UDim2.new(1, 0, 0.5, 0)
-            Converted["_Frame"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Frame"].Parent = Converted["_Interactable"]
-
-            Converted["_UICorner1"].CornerRadius = UDim.new(0, 4)
-            Converted["_UICorner1"].Parent = Converted["_Frame"]
-
-            Converted["_0_padding"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_0_padding"].BackgroundTransparency = 1
-            Converted["_0_padding"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_0_padding"].Name = "0_padding"
-            Converted["_0_padding"].Parent = Converted["_Frame"]
-
-            Converted["_padding"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_padding"].BackgroundTransparency = 1
-            Converted["_padding"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_padding"].Name = "padding"
-            Converted["_padding"].Parent = Converted["_Frame"]
-
-            Converted["_UIListLayout"].Padding = UDim.new(0, 6)
-            Converted["_UIListLayout"].FillDirection = Enum.FillDirection.Horizontal
-            Converted["_UIListLayout"].VerticalAlignment = Enum.VerticalAlignment.Center
-            Converted["_UIListLayout"].Parent = Converted["_Frame"]
-
-            Converted["_Title"].Font = Enum.Font.Gotham
-            Converted["_Title"].Text = "Execute"
-            Converted["_Title"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Title"].TextSize = 14
-            Converted["_Title"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Title"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title"].BackgroundTransparency = 1
-            Converted["_Title"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Title"].Name = "Title"
-            Converted["_Title"].Parent = Converted["_Frame"]
-
-            Converted["_Theme"].Value = "TextColor3"
-            Converted["_Theme"].Name = "Theme"
-            Converted["_Theme"].Parent = Converted["_Title"]
-
-            Converted["_Category"].Value = "Symbols"
-            Converted["_Category"].Name = "Category"
-            Converted["_Category"].Parent = Converted["_Theme"]
-
-            Converted["_Ignore"].Name = "Ignore"
-            Converted["_Ignore"].Parent = Converted["_Theme"]
-
-            Converted["_Theme1"].Value = "BackgroundColor3"
-            Converted["_Theme1"].Name = "Theme"
-            Converted["_Theme1"].Parent = Converted["_Frame"]
-
-            Converted["_Category1"].Value = "Main"
-            Converted["_Category1"].Name = "Category"
-            Converted["_Category1"].Parent = Converted["_Theme1"]
-
-            Converted["_Ignore1"].Name = "Ignore"
-            Converted["_Ignore1"].Parent = Converted["_Theme1"]
-
-            Converted["_Loading"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Loading"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Loading"].BackgroundTransparency = 1
-            Converted["_Loading"].Size = UDim2.new(0, 17, 0, 17)
-            Converted["_Loading"].Visible = false
-            Converted["_Loading"].Name = "Loading"
-            Converted["_Loading"].Parent = Converted["_Frame"]
-
-            Converted["_UIAspectRatioConstraint"].Parent = Converted["_Loading"]
-
-            Converted["_Loading1"].Image = "http://www.roblox.com/asset/?id=10262657333"
-            Converted["_Loading1"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_Loading1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Loading1"].BackgroundTransparency = 1
-            Converted["_Loading1"].Position = UDim2.new(0.5, 0, 0.5, 0)
-            Converted["_Loading1"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_Loading1"].Name = "Loading"
-            Converted["_Loading1"].Parent = Converted["_Loading"]
-
-            Converted["_Theme2"].Value = "ImageColor3"
-            Converted["_Theme2"].Name = "Theme" 
-            Converted["_Theme2"].Parent = Converted["_Loading1"]
-
-            Converted["_Category2"].Value = "SymbolSelect"
-            Converted["_Category2"].Name = "Category"
-            Converted["_Category2"].Parent = Converted["_Theme2"]
-
-            Converted["_Ignore2"].Name = "Ignore"
-            Converted["_Ignore2"].Parent = Converted["_Theme2"]
-
-            Converted["_Title1"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Title1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title1"].BackgroundTransparency = 1
-            Converted["_Title1"].Position = UDim2.new(-0, 9, 0.5, 0)
-            Converted["_Title1"].Size = UDim2.new(0.453000009, -45, 0, 14)
-            Converted["_Title1"].Name = "Title"
-            Converted["_Title1"].Parent = Converted["_6_Interactable"]
-
-            Converted["_Main"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Main"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Main"].BackgroundTransparency = 1
-            Converted["_Main"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Main"].Name = "Main"
-            Converted["_Main"].Parent = Converted["_Title1"]
-
-            Converted["_Title2"].Font = Enum.Font.GothamMedium
-            Converted["_Title2"].Text = "Interactable"
-            Converted["_Title2"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Title2"].TextSize = 14
-            Converted["_Title2"].TextTruncate = Enum.TextTruncate.AtEnd
-            Converted["_Title2"].TextWrapped = true
-            Converted["_Title2"].TextXAlignment = Enum.TextXAlignment.Left
-            Converted["_Title2"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Title2"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title2"].BackgroundTransparency = 1
-            Converted["_Title2"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Title2"].Name = "Title"
-            Converted["_Title2"].Parent = Converted["_Main"]
-
-            Converted["_Theme3"].Value = "TextColor3"
-            Converted["_Theme3"].Name = "Theme"
-            Converted["_Theme3"].Parent = Converted["_Title2"]
-
-            Converted["_Category3"].Value = "Symbols"
-            Converted["_Category3"].Name = "Category"
-            Converted["_Category3"].Parent = Converted["_Theme3"]
-
-            Converted["_Ignore3"].Name = "Ignore"
-            Converted["_Ignore3"].Parent = Converted["_Theme3"]
-
-            Converted["_Warning"].Image = "http://www.roblox.com/asset/?id=10969141992"
-            Converted["_Warning"].ImageColor3 = Color3.fromRGB(255, 249.0000155568123, 53.000004440546036)
-            Converted["_Warning"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Warning"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Warning"].BackgroundTransparency = 1
-            Converted["_Warning"].Size = UDim2.new(0, 16, 0, 16)
-            Converted["_Warning"].Visible = false
-            Converted["_Warning"].Name = "Warning"
-            Converted["_Warning"].Parent = Converted["_Title1"]
-
-            Converted["_Theme4"].Value = "ImageColor3"
-            Converted["_Theme4"].Name = "Theme"
-            Converted["_Theme4"].Parent = Converted["_Warning"]
-
-            Converted["_Category4"].Value = "Warning"
-            Converted["_Category4"].Name = "Category"
-            Converted["_Category4"].Parent = Converted["_Theme4"]
-
-            Converted["_Ignore4"].Name = "Ignore"
-            Converted["_Ignore4"].Parent = Converted["_Theme4"]
-
-            Converted["_UIListLayout1"].Padding = UDim.new(0, 2)
-            Converted["_UIListLayout1"].FillDirection = Enum.FillDirection.Horizontal
-            Converted["_UIListLayout1"].SortOrder = Enum.SortOrder.LayoutOrder
-            Converted["_UIListLayout1"].VerticalAlignment = Enum.VerticalAlignment.Bottom
-            Converted["_UIListLayout1"].Parent = Converted["_Title1"]
-
-            Converted["_Theme5"].Value = "BackgroundColor3"
-            Converted["_Theme5"].Name = "Theme"
-            Converted["_Theme5"].Parent = Converted["_6_Interactable"]
-
-            Converted["_Category5"].Value = "Element"
-            Converted["_Category5"].Name = "Category"
-            Converted["_Category5"].Parent = Converted["_Theme5"]
-
-            Converted["_Ignore5"].Name = "Ignore"
-            Converted["_Ignore5"].Parent = Converted["_Theme5"]
-
-            Converted["_Element"].Value = "Interactable"
-            Converted["_Element"].Name = "Element"
-            Converted["_Element"].Parent = Converted["_6_Interactable"]
-
-            return Converted["_6_Interactable"]
-        end
-
-        local element = createElement()
-        local fr = element.Interactable.Frame
-        local color = _self.color
-        fr.BackgroundColor3 = color
-        fr.Active = true
-        local contrast = utility:GetTextContrast(color)
-        fr.Title.TextColor3 = contrast
-        fr.Title.Text = info.ActionText or "Interact"
-        fr.Loading.Loading.ImageColor3 = contrast
-
-        LPH_JIT_MAX(function()
-            table.insert(_self._connections,Run.RenderStepped:Connect(function()
-                fr.Loading.Loading.Rotation = (os.clock()*550)%360
-            end))
-        end)()
-
-        do -- interactable
-            local btn = fr
-
-            btn.MouseEnter:Connect(function()
-                local m = 0.8
-                fr.BackgroundColor3 = Color3.new(color.R*m,color.G*m,color.B*m)
-            end)
-
-            btn.MouseLeave:Connect(function()
-                fr.BackgroundColor3 = color
-            end)
-
-            btn.InputBegan:Connect(function(input)
-                if input.UserInputType==Enum.UserInputType.MouseButton1 then
-                    local m = 1.2
-                    fr.BackgroundColor3 = Color3.new(color.R*m,color.G*m,color.B*m)
-                end
-            end)
-
-            table.insert(_self._connections,UIS.InputEnded:Connect(function(input)
-                if input.UserInputType==Enum.UserInputType.MouseButton1 then
-                    fr.BackgroundColor3 = color
-                end
-            end))
-
-            btn.InputEnded:Connect(function(input)
-                if input.UserInputType==Enum.UserInputType.MouseButton1 and fr.Loading.Visible==false then
-                    fr.Loading.Visible = true
-                    fr.Title.Visible = false
-                    local s,r = pcall(info.Callback)
-                    if not s then
-                        warn("Interactable Callback Error: "..r)
-                    end
-                    fr.Loading.Visible = false
-                    fr.Title.Visible = true
-                end
-            end)
-        end
-
-        info.WarningIcon = info.WarningIcon or Library.Icons.Warning
-        element.Title.Warning.Image = "http://www.roblox.com/asset/?id="..info.WarningIcon
-        if info.Warning then
-            element.Title.Warning.ImageColor3 = Color3.new(1,1,1)
-            element.Title.Warning.Visible = true
-            local hint = utility:CreateHint()
-            hint.Value = info.Warning
-            hint.Parent = element.Title.Warning
-        end
-
-        element.Title.Main.Title.Text = info.Name
-        element.Name = string.rep("_",elementNum)..info.Name
-        element.Parent = section.holder.Contents
-    end
-    function Element.CreateKeybind(section,info)
-        local _self = section._self
-        -- Requirements
-        utility:Requirement(type(info)=="table","Info must be a table!")
-        utility:Requirement(info.Name,"Missing name argument")
-        utility:Requirement(info.Flag,"Missing flag argument")
-
-        info.Callback = info.Callback or utility.BlankFunction
-        info.KeyPressed = info.KeyPressed or utility.BlankFunction
-
-        if info.Default and type(info.Default)=="string" then
-            info.Default = Enum.KeyCode[info.Default]
-        end
-        info.Default = info.Default or Enum.KeyCode.Unknown
-
-        if _self._usedFlags[info.Flag] then
-            warn("Flag must have unique name!")
-            return
-        else
-            _self._usedFlags[info.Flag] = true
-        end
-
-        _self.Flags[info.Flag] = _self.Flags[info.Flag] or info.Default
-
-        if info.SavingDisabled then
-            _self.Flags[info.Flag] = info.Default
-        end
-
-        if info.CallbackOnCreation then
-            coroutine.wrap(info.Callback)(_self.Flags[info.Flag])
-        end
-
-        section.elementNum = section.elementNum+1
-
-        local elementNum = section.elementNum
-
-        local function createElement()
-            -- Generated using RoadToGlory's Converter v1.1 (RoadToGlory#9879)
-            local Converted = {
-                ["_7_Keybind"] = Instance.new("Frame");
-                ["_UICorner"] = Instance.new("UICorner");
-                ["_Frame"] = Instance.new("Frame");
-                ["_Frame1"] = Instance.new("Frame");
-                ["_UICorner1"] = Instance.new("UICorner");
-                ["_0_padding"] = Instance.new("Frame");
-                ["_padding"] = Instance.new("Frame");
-                ["_UIListLayout"] = Instance.new("UIListLayout");
-                ["_Title"] = Instance.new("TextLabel");
-                ["_Theme"] = Instance.new("StringValue");
-                ["_Category"] = Instance.new("StringValue");
-                ["_Ignore"] = Instance.new("BoolValue");
-                ["_Symbol"] = Instance.new("ImageLabel");
-                ["_UIAspectRatioConstraint"] = Instance.new("UIAspectRatioConstraint");
-                ["_Theme1"] = Instance.new("StringValue");
-                ["_Category1"] = Instance.new("StringValue");
-                ["_Ignore1"] = Instance.new("BoolValue");
-                ["_Theme2"] = Instance.new("StringValue");
-                ["_Category2"] = Instance.new("StringValue");
-                ["_Ignore2"] = Instance.new("BoolValue");
-                ["_Title1"] = Instance.new("Frame");
-                ["_Main"] = Instance.new("Frame");
-                ["_Title2"] = Instance.new("TextLabel");
-                ["_Theme3"] = Instance.new("StringValue");
-                ["_Category3"] = Instance.new("StringValue");
-                ["_Ignore3"] = Instance.new("BoolValue");
-                ["_Warning"] = Instance.new("ImageLabel");
-                ["_Theme4"] = Instance.new("StringValue");
-                ["_Category4"] = Instance.new("StringValue");
-                ["_Ignore4"] = Instance.new("BoolValue");
-                ["_UIListLayout1"] = Instance.new("UIListLayout");
-                ["_Theme5"] = Instance.new("StringValue");
-                ["_Category5"] = Instance.new("StringValue");
-                ["_Ignore5"] = Instance.new("BoolValue");
-                ["_Element"] = Instance.new("StringValue");
-            }
-
-            --Properties
-
-            Converted["_7_Keybind"].BackgroundColor3 = Color3.fromRGB(28.000000230968, 28.000000230968, 28.000000230968)
-            Converted["_7_Keybind"].Size = UDim2.new(1, 0, 0, 35)
-            Converted["_7_Keybind"].Name = "7_Keybind"
-            Converted["_7_Keybind"].Parent = game:GetService("CoreGui")
-
-            Converted["_UICorner"].CornerRadius = UDim.new(0, 4)
-            Converted["_UICorner"].Parent = Converted["_7_Keybind"]
-
-            Converted["_Frame"].AnchorPoint = Vector2.new(1, 0.5)
-            Converted["_Frame"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Frame"].BackgroundTransparency = 1
-            Converted["_Frame"].Position = UDim2.new(1.00000012, -10, 0.5, 0)
-            Converted["_Frame"].Size = UDim2.new(0.572936594, 1, 0.649999976, 0)
-            Converted["_Frame"].Parent = Converted["_7_Keybind"]
-
-            Converted["_Frame1"].AnchorPoint = Vector2.new(1, 0.5)
-            Converted["_Frame1"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Frame1"].BackgroundColor3 = Color3.fromRGB(18.000000827014446, 18.000000827014446, 18.000000827014446)
-            Converted["_Frame1"].Position = UDim2.new(1, 0, 0.5, 0)
-            Converted["_Frame1"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Frame1"].Parent = Converted["_Frame"]
-
-            Converted["_UICorner1"].CornerRadius = UDim.new(0, 4)
-            Converted["_UICorner1"].Parent = Converted["_Frame1"]
-
-            Converted["_0_padding"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_0_padding"].BackgroundTransparency = 1
-            Converted["_0_padding"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_0_padding"].Name = "0_padding"
-            Converted["_0_padding"].Parent = Converted["_Frame1"]
-
-            Converted["_padding"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_padding"].BackgroundTransparency = 1
-            Converted["_padding"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_padding"].Name = "padding"
-            Converted["_padding"].Parent = Converted["_Frame1"]
-
-            Converted["_UIListLayout"].Padding = UDim.new(0, 5)
-            Converted["_UIListLayout"].FillDirection = Enum.FillDirection.Horizontal
-            Converted["_UIListLayout"].VerticalAlignment = Enum.VerticalAlignment.Center
-            Converted["_UIListLayout"].Parent = Converted["_Frame1"]
-
-            Converted["_Title"].Font = Enum.Font.Gotham
-            Converted["_Title"].Text = "..."
-            Converted["_Title"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Title"].TextSize = 14
-            Converted["_Title"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Title"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title"].BackgroundTransparency = 1
-            Converted["_Title"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Title"].Name = "Title"
-            Converted["_Title"].Parent = Converted["_Frame1"]
-
-            Converted["_Theme"].Value = "TextColor3"
-            Converted["_Theme"].Name = "Theme"
-            Converted["_Theme"].Parent = Converted["_Title"]
-
-            Converted["_Category"].Value = "Symbols"
-            Converted["_Category"].Name = "Category"
-            Converted["_Category"].Parent = Converted["_Theme"]
-
-            Converted["_Ignore"].Name = "Ignore"
-            Converted["_Ignore"].Parent = Converted["_Theme"]
-
-            Converted["_Symbol"].Image = "http://www.roblox.com/asset/?id=10298464250"
-            Converted["_Symbol"].ImageColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Symbol"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Symbol"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Symbol"].BackgroundTransparency = 1
-            Converted["_Symbol"].Size = UDim2.new(0, 17, 0, 17)
-            Converted["_Symbol"].Name = "Symbol"
-            Converted["_Symbol"].Parent = Converted["_Frame1"]
-
-            Converted["_UIAspectRatioConstraint"].Parent = Converted["_Symbol"]
-
-            Converted["_Theme1"].Value = "ImageColor3"
-            Converted["_Theme1"].Name = "Theme"
-            Converted["_Theme1"].Parent = Converted["_Symbol"]
-
-            Converted["_Category1"].Value = "Symbols"
-            Converted["_Category1"].Name = "Category"
-            Converted["_Category1"].Parent = Converted["_Theme1"]
-
-            Converted["_Ignore1"].Name = "Ignore"
-            Converted["_Ignore1"].Parent = Converted["_Theme1"]
-
-            Converted["_Theme2"].Value = "BackgroundColor3"
-            Converted["_Theme2"].Name = "Theme"
-            Converted["_Theme2"].Parent = Converted["_Frame1"]
-
-            Converted["_Category2"].Value = "Background"
-            Converted["_Category2"].Name = "Category"
-            Converted["_Category2"].Parent = Converted["_Theme2"]
-
-            Converted["_Ignore2"].Name = "Ignore"
-            Converted["_Ignore2"].Parent = Converted["_Theme2"]
-
-            Converted["_Title1"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Title1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title1"].BackgroundTransparency = 1
-            Converted["_Title1"].Position = UDim2.new(-0, 9, 0.5, 0)
-            Converted["_Title1"].Size = UDim2.new(0.442000002, -45, 0, 14)
-            Converted["_Title1"].Name = "Title"
-            Converted["_Title1"].Parent = Converted["_7_Keybind"]
-
-            Converted["_Main"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Main"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Main"].BackgroundTransparency = 1
-            Converted["_Main"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Main"].Name = "Main"
-            Converted["_Main"].Parent = Converted["_Title1"]
-
-            Converted["_Title2"].Font = Enum.Font.GothamMedium
-            Converted["_Title2"].Text = "Keybind"
-            Converted["_Title2"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Title2"].TextSize = 14
-            Converted["_Title2"].TextTruncate = Enum.TextTruncate.AtEnd
-            Converted["_Title2"].TextWrapped = true
-            Converted["_Title2"].TextXAlignment = Enum.TextXAlignment.Left
-            Converted["_Title2"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Title2"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title2"].BackgroundTransparency = 1
-            Converted["_Title2"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Title2"].Name = "Title"
-            Converted["_Title2"].Parent = Converted["_Main"]
-
-            Converted["_Theme3"].Value = "TextColor3"
-            Converted["_Theme3"].Name = "Theme"
-            Converted["_Theme3"].Parent = Converted["_Title2"]
-
-            Converted["_Category3"].Value = "Symbols"
-            Converted["_Category3"].Name = "Category"
-            Converted["_Category3"].Parent = Converted["_Theme3"]
-
-            Converted["_Ignore3"].Name = "Ignore"
-            Converted["_Ignore3"].Parent = Converted["_Theme3"]
-
-            Converted["_Warning"].Image = "http://www.roblox.com/asset/?id=10969141992"
-            Converted["_Warning"].ImageColor3 = Color3.fromRGB(255, 249.0000155568123, 53.000004440546036)
-            Converted["_Warning"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Warning"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Warning"].BackgroundTransparency = 1
-            Converted["_Warning"].Size = UDim2.new(0, 16, 0, 16)
-            Converted["_Warning"].Visible = false
-            Converted["_Warning"].Name = "Warning"
-            Converted["_Warning"].Parent = Converted["_Title1"]
-
-            Converted["_Theme4"].Value = "ImageColor3"
-            Converted["_Theme4"].Name = "Theme"
-            Converted["_Theme4"].Parent = Converted["_Warning"]
-
-            Converted["_Category4"].Value = "Warning"
-            Converted["_Category4"].Name = "Category"
-            Converted["_Category4"].Parent = Converted["_Theme4"]
-
-            Converted["_Ignore4"].Name = "Ignore"
-            Converted["_Ignore4"].Parent = Converted["_Theme4"]
-
-            Converted["_UIListLayout1"].Padding = UDim.new(0, 2)
-            Converted["_UIListLayout1"].FillDirection = Enum.FillDirection.Horizontal
-            Converted["_UIListLayout1"].SortOrder = Enum.SortOrder.LayoutOrder
-            Converted["_UIListLayout1"].VerticalAlignment = Enum.VerticalAlignment.Bottom
-            Converted["_UIListLayout1"].Parent = Converted["_Title1"]
-
-            Converted["_Theme5"].Value = "BackgroundColor3"
-            Converted["_Theme5"].Name = "Theme"
-            Converted["_Theme5"].Parent = Converted["_7_Keybind"]
-
-            Converted["_Category5"].Value = "Element"
-            Converted["_Category5"].Name = "Category"
-            Converted["_Category5"].Parent = Converted["_Theme5"]
-
-            Converted["_Ignore5"].Name = "Ignore"
-            Converted["_Ignore5"].Parent = Converted["_Theme5"]
-
-            Converted["_Element"].Value = "Keybind"
-            Converted["_Element"].Name = "Element"
-            Converted["_Element"].Parent = Converted["_7_Keybind"]
-
-            return Converted["_7_Keybind"]
-        end
-
-        local element = createElement()
-        local fr = element.Frame.Frame
-        fr.Active = true
-        local key = fr.Title
-
-        do -- keybind
-            local listening = false
-            local keyLastPressed = nil
-            local lastPressed = nil
-            table.insert(_self._connections,UIS.InputBegan:Connect(function(input)
-                if input.UserInputType==Enum.UserInputType.Keyboard then
-                    keyLastPressed = input.KeyCode
-                    lastPressed = os.clock()
-                    if input.KeyCode == _self.Flags[info.Flag] and input.KeyCode~=Enum.KeyCode.Unknown then
-                        info.KeyPressed()
-                    end
-                end
-            end))
-            fr.InputEnded:Connect(function(input)
-                if input.UserInputType==Enum.UserInputType.MouseButton1 and listening==false then
-                    listening = true
-                    local save = tonumber(lastPressed)
-                    repeat utility:Wait() until save~=lastPressed
-                    if keyLastPressed==Enum.KeyCode.Backspace then
-                        keyLastPressed = Enum.KeyCode.Unknown
-                    end
-                    _self.Flags[info.Flag] = keyLastPressed
-                    listening = false
-                    info.Callback(keyLastPressed)
-                end
-            end)
-            LPH_JIT_MAX(function()
-                table.insert(_self._connections,Run.RenderStepped:Connect(function()
-                    key.Text = listening and "..." or ((_self.Flags[info.Flag]==nil or _self.Flags[info.Flag].Name=="Unknown") and "None" or _self.Flags[info.Flag].Name)
-                end))
-            end)()
-        end
-
-        info.WarningIcon = info.WarningIcon or Library.Icons.Warning
-        element.Title.Warning.Image = "http://www.roblox.com/asset/?id="..info.WarningIcon
-        if info.Warning then
-            element.Title.Warning.ImageColor3 = Color3.new(1,1,1)
-            element.Title.Warning.Visible = true
-            local hint = utility:CreateHint()
-            hint.Value = info.Warning
-            hint.Parent = element.Title.Warning
-        end
-
-        element.Title.Main.Title.Text = info.Name
-        element.Name = string.rep("_",elementNum)..info.Name
-        element.Parent = section.holder.Contents
-    end
-    function Element.CreateDropdown(section,info)
-        local _self = section._self
-        -- Requirements
-        utility:Requirement(type(info)=="table","Info must be a table!")
-        utility:Requirement(info.Name,"Missing name argument")
-
-        info.Callback = info.Callback or utility.BlankFunction
-        info.Options = info.Options or {}
-
-        if info.ItemSelecting==nil then
-            info.ItemSelecting = false
-        end
-        info.DefaultItemSelected = info.DefaultItemSelected or "None"
-
-        section.elementNum = section.elementNum+1
-
-        local elementNum = section.elementNum
-
-        local function createElement()
-            -- Generated using RoadToGlory's Converter v1.1 (RoadToGlory#9879)
-            local Converted = {
-                ["_8_Dropdown"] = Instance.new("Frame");
-                ["_Main"] = Instance.new("Frame");
-                ["_Arrow"] = Instance.new("ImageLabel");
-                ["_Theme"] = Instance.new("StringValue");
-                ["_Category"] = Instance.new("StringValue");
-                ["_Ignore"] = Instance.new("BoolValue");
-                ["_UICorner"] = Instance.new("UICorner");
-                ["_Fill"] = Instance.new("Frame");
-                ["_Theme1"] = Instance.new("StringValue");
-                ["_Category1"] = Instance.new("StringValue");
-                ["_Ignore1"] = Instance.new("BoolValue");
-                ["_Title"] = Instance.new("Frame");
-                ["_Main1"] = Instance.new("Frame");
-                ["_Title1"] = Instance.new("TextLabel");
-                ["_Theme2"] = Instance.new("StringValue");
-                ["_Category2"] = Instance.new("StringValue");
-                ["_Ignore2"] = Instance.new("BoolValue");
-                ["_Warning"] = Instance.new("ImageLabel");
-                ["_Theme3"] = Instance.new("StringValue");
-                ["_Category3"] = Instance.new("StringValue");
-                ["_Ignore3"] = Instance.new("BoolValue");
-                ["_UIListLayout"] = Instance.new("UIListLayout");
-                ["_Theme4"] = Instance.new("StringValue");
-                ["_Category4"] = Instance.new("StringValue");
-                ["_Ignore4"] = Instance.new("BoolValue");
-                ["_Secondary"] = Instance.new("Frame");
-                ["_ScrollingFrame"] = Instance.new("ScrollingFrame");
-                ["_UIListLayout1"] = Instance.new("UIListLayout");
-                ["_padding"] = Instance.new("Frame");
-                ["_UICorner1"] = Instance.new("UICorner");
-                ["_Theme5"] = Instance.new("StringValue");
-                ["_Category5"] = Instance.new("StringValue");
-                ["_Ignore5"] = Instance.new("BoolValue");
-                ["_UIListLayout2"] = Instance.new("UIListLayout");
-                ["_Element"] = Instance.new("StringValue");
-            }
-
-            --Properties
-
-            Converted["_8_Dropdown"].AutomaticSize = Enum.AutomaticSize.Y
-            Converted["_8_Dropdown"].BackgroundColor3 = Color3.fromRGB(28.000000230968, 28.000000230968, 28.000000230968)
-            Converted["_8_Dropdown"].BackgroundTransparency = 1
-            Converted["_8_Dropdown"].Size = UDim2.new(1, 0, 0, 1)
-            Converted["_8_Dropdown"].Name = "8_Dropdown"
-            Converted["_8_Dropdown"].Parent = game:GetService("CoreGui")
-
-            Converted["_Main"].BackgroundColor3 = Color3.fromRGB(28.000000230968, 28.000000230968, 28.000000230968)
-            Converted["_Main"].Size = UDim2.new(1, 0, 0, 35)
-            Converted["_Main"].Name = "Main"
-            Converted["_Main"].Parent = Converted["_8_Dropdown"]
-
-            Converted["_Arrow"].Image = "rbxassetid://10260760054"
-            Converted["_Arrow"].ImageColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Arrow"].AnchorPoint = Vector2.new(1, 0.5)
-            Converted["_Arrow"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Arrow"].BackgroundTransparency = 1
-            Converted["_Arrow"].Position = UDim2.new(1, -9, 0.5, 0)
-            Converted["_Arrow"].Size = UDim2.new(0, 21, 0, 21)
-            Converted["_Arrow"].Name = "Arrow"
-            Converted["_Arrow"].Parent = Converted["_Main"]
-
-            Converted["_Theme"].Value = "ImageColor3"
-            Converted["_Theme"].Name = "Theme"
-            Converted["_Theme"].Parent = Converted["_Arrow"]
-
-            Converted["_Category"].Value = "Symbols"
-            Converted["_Category"].Name = "Category"
-            Converted["_Category"].Parent = Converted["_Theme"]
-
-            Converted["_Ignore"].Name = "Ignore"
-            Converted["_Ignore"].Parent = Converted["_Theme"]
-
-            Converted["_UICorner"].CornerRadius = UDim.new(0, 4)
-            Converted["_UICorner"].Parent = Converted["_Main"]
-
-            Converted["_Fill"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Fill"].BackgroundColor3 = Color3.fromRGB(28.000000230968, 28.000000230968, 28.000000230968)
-            Converted["_Fill"].BorderSizePixel = 0
-            Converted["_Fill"].Position = UDim2.new(0, 0, 1, 0)
-            Converted["_Fill"].Size = UDim2.new(1, 0, 0, 8)
-            Converted["_Fill"].Visible = false
-            Converted["_Fill"].ZIndex = 0
-            Converted["_Fill"].Name = "Fill"
-            Converted["_Fill"].Parent = Converted["_Main"]
-
-            Converted["_Theme1"].Value = "BackgroundColor3"
-            Converted["_Theme1"].Name = "Theme"
-            Converted["_Theme1"].Parent = Converted["_Fill"]
-
-            Converted["_Category1"].Value = "Element"
-            Converted["_Category1"].Name = "Category"
-            Converted["_Category1"].Parent = Converted["_Theme1"]
-
-            Converted["_Ignore1"].Name = "Ignore"
-            Converted["_Ignore1"].Parent = Converted["_Theme1"]
-
-            Converted["_Title"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Title"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title"].BackgroundTransparency = 1
-            Converted["_Title"].Position = UDim2.new(-0, 9, 0.5, 0)
-            Converted["_Title"].Size = UDim2.new(1, -45, 0, 14)
-            Converted["_Title"].Name = "Title"
-            Converted["_Title"].Parent = Converted["_Main"]
-
-            Converted["_Main1"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Main1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Main1"].BackgroundTransparency = 1
-            Converted["_Main1"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Main1"].Name = "Main"
-            Converted["_Main1"].Parent = Converted["_Title"]
-
-            Converted["_Title1"].Font = Enum.Font.GothamMedium
-            Converted["_Title1"].Text = "Dropdown"
-            Converted["_Title1"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Title1"].TextSize = 14
-            Converted["_Title1"].TextTruncate = Enum.TextTruncate.AtEnd
-            Converted["_Title1"].TextWrapped = true
-            Converted["_Title1"].TextXAlignment = Enum.TextXAlignment.Left
-            Converted["_Title1"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Title1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title1"].BackgroundTransparency = 1
-            Converted["_Title1"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Title1"].Name = "Title"
-            Converted["_Title1"].Parent = Converted["_Main1"]
-
-            Converted["_Theme2"].Value = "TextColor3"
-            Converted["_Theme2"].Name = "Theme"
-            Converted["_Theme2"].Parent = Converted["_Title1"]
-
-            Converted["_Category2"].Value = "Symbols"
-            Converted["_Category2"].Name = "Category"
-            Converted["_Category2"].Parent = Converted["_Theme2"]
-
-            Converted["_Ignore2"].Name = "Ignore"
-            Converted["_Ignore2"].Parent = Converted["_Theme2"]
-
-            Converted["_Warning"].Image = "http://www.roblox.com/asset/?id=10969141992"
-            Converted["_Warning"].ImageColor3 = Color3.fromRGB(255, 249.0000155568123, 53.000004440546036)
-            Converted["_Warning"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Warning"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Warning"].BackgroundTransparency = 1
-            Converted["_Warning"].Size = UDim2.new(0, 16, 0, 16)
-            Converted["_Warning"].Visible = false
-            Converted["_Warning"].Name = "Warning"
-            Converted["_Warning"].Parent = Converted["_Title"]
-
-            Converted["_Theme3"].Value = "ImageColor3"
-            Converted["_Theme3"].Name = "Theme"
-            Converted["_Theme3"].Parent = Converted["_Warning"]
-
-            Converted["_Category3"].Value = "Warning"
-            Converted["_Category3"].Name = "Category"
-            Converted["_Category3"].Parent = Converted["_Theme3"]
-
-            Converted["_Ignore3"].Name = "Ignore"
-            Converted["_Ignore3"].Parent = Converted["_Theme3"]
-
-            Converted["_UIListLayout"].Padding = UDim.new(0, 2)
-            Converted["_UIListLayout"].FillDirection = Enum.FillDirection.Horizontal
-            Converted["_UIListLayout"].SortOrder = Enum.SortOrder.LayoutOrder
-            Converted["_UIListLayout"].VerticalAlignment = Enum.VerticalAlignment.Bottom
-            Converted["_UIListLayout"].Parent = Converted["_Title"]
-
-            Converted["_Theme4"].Value = "BackgroundColor3"
-            Converted["_Theme4"].Name = "Theme"
-            Converted["_Theme4"].Parent = Converted["_Main"]
-
-            Converted["_Category4"].Value = "Element"
-            Converted["_Category4"].Name = "Category"
-            Converted["_Category4"].Parent = Converted["_Theme4"]
-
-            Converted["_Ignore4"].Name = "Ignore"
-            Converted["_Ignore4"].Parent = Converted["_Theme4"]
-
-            Converted["_Secondary"].BackgroundColor3 = Color3.fromRGB(28.000000230968, 28.000000230968, 28.000000230968)
-            Converted["_Secondary"].BorderSizePixel = 0
-            Converted["_Secondary"].ClipsDescendants = true
-            Converted["_Secondary"].Position = UDim2.new(0, 0, 0, 35)
-            Converted["_Secondary"].Size = UDim2.new(1, 0, 0, 118)
-            Converted["_Secondary"].Visible = false
-            Converted["_Secondary"].Name = "Secondary"
-            Converted["_Secondary"].Parent = Converted["_8_Dropdown"]
-
-            Converted["_ScrollingFrame"].AutomaticCanvasSize = Enum.AutomaticSize.Y
-            Converted["_ScrollingFrame"].CanvasSize = UDim2.new(0, 0, 0, 1)
-            Converted["_ScrollingFrame"].ScrollBarImageColor3 = Color3.fromRGB(0, 0, 0)
-            Converted["_ScrollingFrame"].ScrollBarThickness = 0
-            Converted["_ScrollingFrame"].Active = true
-            Converted["_ScrollingFrame"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_ScrollingFrame"].BackgroundTransparency = 1
-            Converted["_ScrollingFrame"].Size = UDim2.new(1, 0, 0, 117)
-            Converted["_ScrollingFrame"].Parent = Converted["_Secondary"]
-
-            Converted["_UIListLayout1"].Padding = UDim.new(0, 4)
-            Converted["_UIListLayout1"].HorizontalAlignment = Enum.HorizontalAlignment.Center
-            Converted["_UIListLayout1"].Parent = Converted["_ScrollingFrame"]
-
-            Converted["_padding"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_padding"].BackgroundTransparency = 1
-            Converted["_padding"].Size = UDim2.new(1, 0, 0, 0)
-            Converted["_padding"].Name = "padding"
-            Converted["_padding"].Parent = Converted["_ScrollingFrame"]
-
-            Converted["_UICorner1"].CornerRadius = UDim.new(0, 4)
-            Converted["_UICorner1"].Parent = Converted["_Secondary"]
-
-            Converted["_Theme5"].Value = "BackgroundColor3"
-            Converted["_Theme5"].Name = "Theme"
-            Converted["_Theme5"].Parent = Converted["_Secondary"]
-
-            Converted["_Category5"].Value = "Element"
-            Converted["_Category5"].Name = "Category"
-            Converted["_Category5"].Parent = Converted["_Theme5"]
-
-            Converted["_Ignore5"].Name = "Ignore"
-            Converted["_Ignore5"].Parent = Converted["_Theme5"]
-
-            Converted["_UIListLayout2"].HorizontalAlignment = Enum.HorizontalAlignment.Center
-            Converted["_UIListLayout2"].Parent = Converted["_8_Dropdown"]
-
-            Converted["_Element"].Value = "Dropdown"
-            Converted["_Element"].Name = "Element"
-            Converted["_Element"].Parent = Converted["_8_Dropdown"]
-
-            return Converted["_8_Dropdown"]
-        end
-
-        local element = createElement()
-
-        local isOpen,closeDropdown do -- dropdown
-            local open = false
-            local tween1 = nil
-            local tween2
-
-            local openProperty = UDim2.new(1, 0, 0, 118)
-            local closeProperty = UDim2.new(1, 0, 0, 0)
-
-            local tweenInfo = TweenInfo.new(0.25,Enum.EasingStyle.Sine,Enum.EasingDirection.In,0,false,0)
-
-            element.Secondary.Visible = false
-
-            local function toggleDropdown()
-                open = not open
-                pcall(function()
-                    tween1:Cancel()
-                    tween1:Destroy()
-                    tween2:Cancel()
-                    tween2:Destroy()
-                end)
-                if open then
-                    element.Main.Fill.Visible = true
-                    element.Secondary.Visible = true
-                    element.Secondary.Size = closeProperty
-                end
-                tween1 = TS:Create(element.Secondary,tweenInfo,{
-                    ["Size"] = open and openProperty or closeProperty
-                })
-                tween2 = TS:Create(element.Main.Arrow,tweenInfo,{
-                    ["Rotation"] = open and 180 or 0
-                })
-                if not open then
-                    tween1.Completed:Connect(function(p)
-                        if p==Enum.PlaybackState.Completed then
-                            element.Main.Fill.Visible = false
-                            element.Secondary.Visible = false
-                        end
-                    end)
-                end
-                tween1:Play()
-                tween2:Play()
-            end
-
-            function isOpen()
-                return open
-            end
-
-            function closeDropdown()
-                if open then toggleDropdown() end
-            end
-
-            local btn = utility:CreateButtonObject(element.Main)
-
-            btn.Activated:Connect(toggleDropdown)
-        end
-
-        info.WarningIcon = info.WarningIcon or Library.Icons.Warning
-        element.Main.Title.Warning.Image = "http://www.roblox.com/asset/?id="..info.WarningIcon
-        if info.Warning then
-            element.Main.Title.Warning.ImageColor3 = Color3.new(1,1,1)
-            element.Main.Title.Warning.Visible = true
-            local hint = utility:CreateHint()
-            hint.Value = info.Warning
-            hint.Parent = element.Main.Title.Warning
-        end
-
-        element.Main.Title.Main.Title.Text = info.Name .. (info.ItemSelecting and (": "..info.DefaultItemSelected) or "")
-        element.Name = string.rep("_",elementNum)..info.Name
-        element.Parent = section.holder.Contents
-
-        local scroll = element.Secondary.ScrollingFrame
-        local function makeButton(func)
-            -- Generated using RoadToGlory's Converter v1.1 (RoadToGlory#9879)
-            local Converted = {
-                ["_1_button"] = Instance.new("Frame");
-                ["_UICorner"] = Instance.new("UICorner");
-                ["_Image"] = Instance.new("Frame");
-                ["_UICorner1"] = Instance.new("UICorner");
-                ["_ImageLabel"] = Instance.new("ImageLabel");
-                ["_Theme"] = Instance.new("StringValue");
-                ["_Category"] = Instance.new("StringValue");
-                ["_Ignore"] = Instance.new("BoolValue");
-                ["_Title"] = Instance.new("Frame");
-                ["_Main"] = Instance.new("Frame");
-                ["_Title1"] = Instance.new("TextLabel");
-                ["_Theme1"] = Instance.new("StringValue");
-                ["_Category1"] = Instance.new("StringValue");
-                ["_Ignore1"] = Instance.new("BoolValue");
-                ["_Warning"] = Instance.new("ImageLabel");
-                ["_Theme2"] = Instance.new("StringValue");
-                ["_Category2"] = Instance.new("StringValue");
-                ["_Ignore2"] = Instance.new("BoolValue");
-                ["_UIListLayout"] = Instance.new("UIListLayout");
-                ["_Shade"] = Instance.new("Frame");
-                ["_UICorner2"] = Instance.new("UICorner");
-                ["_Theme3"] = Instance.new("StringValue");
-                ["_Category3"] = Instance.new("StringValue");
-                ["_Ignore3"] = Instance.new("BoolValue");
-                ["_Theme4"] = Instance.new("StringValue");
-                ["_Category4"] = Instance.new("StringValue");
-                ["_Ignore4"] = Instance.new("BoolValue");
-            }
-
-            --Properties
-
-            Converted["_1_button"].BackgroundColor3 = Color3.fromRGB(18.000000827014446, 18.000000827014446, 18.000000827014446)
-            Converted["_1_button"].Size = UDim2.new(0.970000029, 0, 0, 35)
-            Converted["_1_button"].Name = "1_button"
-
-            Converted["_UICorner"].CornerRadius = UDim.new(0, 5)
-            Converted["_UICorner"].Parent = Converted["_1_button"]
-
-            Converted["_Image"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_Image"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Image"].BackgroundTransparency = 1
-            Converted["_Image"].Position = UDim2.new(1, -18, 0.5, 0)
-            Converted["_Image"].Size = UDim2.new(0, 24, 0, 24)
-            Converted["_Image"].Name = "Image"
-            Converted["_Image"].Parent = Converted["_1_button"]
-
-            Converted["_UICorner1"].CornerRadius = UDim.new(0, 3)
-            Converted["_UICorner1"].Parent = Converted["_Image"]
-
-            Converted["_ImageLabel"].Image = "http://www.roblox.com/asset/?id=10967996591"
-            Converted["_ImageLabel"].ImageColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_ImageLabel"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_ImageLabel"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_ImageLabel"].BackgroundTransparency = 1
-            Converted["_ImageLabel"].Position = UDim2.new(0.5, 0, 0.5, 0)
-            Converted["_ImageLabel"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_ImageLabel"].Parent = Converted["_Image"]
-
-            Converted["_Theme"].Value = "ImageColor3"
-            Converted["_Theme"].Name = "Theme"
-            Converted["_Theme"].Parent = Converted["_ImageLabel"]
-
-            Converted["_Category"].Value = "Symbols"
-            Converted["_Category"].Name = "Category"
-            Converted["_Category"].Parent = Converted["_Theme"]
-
-            Converted["_Ignore"].Name = "Ignore"
-            Converted["_Ignore"].Parent = Converted["_Theme"]
-
-            Converted["_Title"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Title"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title"].BackgroundTransparency = 1
-            Converted["_Title"].Position = UDim2.new(-0, 9, 0.5, 0)
-            Converted["_Title"].Size = UDim2.new(1, -45, 0, 14)
-            Converted["_Title"].Name = "Title"
-            Converted["_Title"].Parent = Converted["_1_button"]
-
-            Converted["_Main"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Main"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Main"].BackgroundTransparency = 1
-            Converted["_Main"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Main"].Name = "Main"
-            Converted["_Main"].Parent = Converted["_Title"]
-
-            Converted["_Title1"].Font = Enum.Font.GothamMedium
-            Converted["_Title1"].Text = "Button"
-            Converted["_Title1"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Title1"].TextSize = 14
-            Converted["_Title1"].TextTruncate = Enum.TextTruncate.AtEnd
-            Converted["_Title1"].TextWrapped = true
-            Converted["_Title1"].TextXAlignment = Enum.TextXAlignment.Left
-            Converted["_Title1"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Title1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title1"].BackgroundTransparency = 1
-            Converted["_Title1"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Title1"].Name = "Title"
-            Converted["_Title1"].Parent = Converted["_Main"]
-
-            Converted["_Theme1"].Value = "TextColor3"
-            Converted["_Theme1"].Name = "Theme"
-            Converted["_Theme1"].Parent = Converted["_Title1"]
-
-            Converted["_Category1"].Value = "Symbols"
-            Converted["_Category1"].Name = "Category"
-            Converted["_Category1"].Parent = Converted["_Theme1"]
-
-            Converted["_Ignore1"].Name = "Ignore"
-            Converted["_Ignore1"].Parent = Converted["_Theme1"]
-
-            Converted["_Warning"].Image = "http://www.roblox.com/asset/?id=10969141992"
-            Converted["_Warning"].ImageColor3 = Color3.fromRGB(255, 249.0000155568123, 53.000004440546036)
-            Converted["_Warning"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Warning"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Warning"].BackgroundTransparency = 1
-            Converted["_Warning"].Size = UDim2.new(0, 16, 0, 16)
-            Converted["_Warning"].Visible = false
-            Converted["_Warning"].Name = "Warning"
-            Converted["_Warning"].Parent = Converted["_Title"]
-
-            Converted["_Theme2"].Value = "ImageColor3"
-            Converted["_Theme2"].Name = "Theme"
-            Converted["_Theme2"].Parent = Converted["_Warning"]
-
-            Converted["_Category2"].Value = "Warning"
-            Converted["_Category2"].Name = "Category"
-            Converted["_Category2"].Parent = Converted["_Theme2"]
-
-            Converted["_Ignore2"].Name = "Ignore"
-            Converted["_Ignore2"].Parent = Converted["_Theme2"]
-
-            Converted["_UIListLayout"].Padding = UDim.new(0, 2)
-            Converted["_UIListLayout"].FillDirection = Enum.FillDirection.Horizontal
-            Converted["_UIListLayout"].SortOrder = Enum.SortOrder.LayoutOrder
-            Converted["_UIListLayout"].VerticalAlignment = Enum.VerticalAlignment.Bottom
-            Converted["_UIListLayout"].Parent = Converted["_Title"]
-
-            Converted["_Shade"].BackgroundColor3 = Color3.fromRGB(67.00000360608101, 67.00000360608101, 67.00000360608101)
-            Converted["_Shade"].BackgroundTransparency = 1
-            Converted["_Shade"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_Shade"].Name = "Shade"
-            Converted["_Shade"].Parent = Converted["_1_button"]
-
-            Converted["_UICorner2"].CornerRadius = UDim.new(0, 4)
-            Converted["_UICorner2"].Parent = Converted["_Shade"]
-
-            Converted["_Theme3"].Value = "BackgroundColor3"
-            Converted["_Theme3"].Name = "Theme"
-            Converted["_Theme3"].Parent = Converted["_Shade"]
-
-            Converted["_Category3"].Value = "Shade"
-            Converted["_Category3"].Name = "Category"
-            Converted["_Category3"].Parent = Converted["_Theme3"]
-
-            Converted["_Ignore3"].Name = "Ignore"
-            Converted["_Ignore3"].Parent = Converted["_Theme3"]
-
-            Converted["_Theme4"].Value = "BackgroundColor3"
-            Converted["_Theme4"].Name = "Theme"
-            Converted["_Theme4"].Parent = Converted["_1_button"]
-
-            Converted["_Category4"].Value = "Background"
-            Converted["_Category4"].Name = "Category"
-            Converted["_Category4"].Parent = Converted["_Theme4"]
-
-            Converted["_Ignore4"].Name = "Ignore"
-            Converted["_Ignore4"].Parent = Converted["_Theme4"]
-
-            do -- button
-                local element = Converted["_1_button"]
-                local btn = utility:CreateButtonObject(element)
-                local shade = element.Shade
-                shade.ZIndex = -1
-    
-                local goal = 0.95
-    
-                btn.Activated:Connect(function()
-                    utility:DoClickEffect(element)
-                    coroutine.wrap(func)(element)
-                end)
-
-                local tweenInfo = TweenInfo.new(0.25,Enum.EasingStyle.Sine,Enum.EasingDirection.In,0,false,0)
-    
-                local function isMouseHovering()
-                    local mx,my = mouse.X,mouse.Y
-                    local ap,as = element.AbsolutePosition,element.AbsoluteSize
-                    return mx>ap.X and mx<(ap.X+as.X) and my>ap.Y and my<(ap.Y+as.Y)
-                end
-    
-                local tween
-    
-                local con
-                local last = nil
-                LPH_JIT_MAX(function()
-                    con = mouse.Move:Connect(function()
-                        local hovering = isMouseHovering()
-    
-                        if hovering ~= last then
-                            pcall(function()
-                                tween:Disconnect()
-                                tween:Destroy()
-                            end)
-                            tween = TS:Create(shade,tweenInfo,{
-                                ["BackgroundTransparency"] = hovering and goal or 1
-                            })
-                            tween:Play()
-                        end
-    
-                        last = hovering
-                    end)
-                end)()
-                element.Destroying:Connect(function()
-                    con:Disconnect()
-                end)
-                return element
-            end
-        end
-        local function getFrameChildren()
-            local i = {}
-            for _,v in ipairs(scroll:GetChildren()) do
-                if v:IsA("Frame") and v.Name ~= "padding" then
-                    table.insert(i,v)
-                end
-            end
-            return i
-        end
-        local function update(tbl)
-            local children = getFrameChildren()
-            local existing = #children -- ui layout
-            local deficit = (#tbl)-existing
-
-            if deficit>0 then
-                for _=1,deficit do
-                    makeButton(function(obj)
-                        if isOpen() then
-                            local txt = obj.Title.Main.Title.Text
-                            coroutine.wrap(info.Callback)(txt)
-                            if info.ItemSelecting then
-                                closeDropdown()
-                                element.Main.Title.Main.Title.Text = info.Name .. (info.ItemSelecting and (": "..txt) or "")
-                            end
-                        end
-                    end).Parent = scroll
-                end
-            elseif deficit<0 then
-                for i=1,-deficit do
-                    children[i]:Destroy()
-                end
-            end
-
-            children = getFrameChildren()
-
-            for i,v in ipairs(tbl) do
-                local obj = children[i]
-                obj.Name = string.rep("!",i)
-                obj.Title.Warning.Visible = false -- disabled for now because I don't remember why I included this in the first place
-                obj.Title.Main.Title.Text = v or ""
-            end
-        end
-        update(info.Options)
-        return {
-            ["Update"] = function(self,...)
-                return update(...)
-            end
-        }
-    end
-    function Element.CreateColorPicker(section,info)
-        local _self = section._self
-        -- Requirements
-        utility:Requirement(type(info)=="table","Info must be a table!")
-        utility:Requirement(info.Name,"Missing name argument")
-        utility:Requirement(info.Flag,"Missing flag argument")
-
-        info.Callback = info.Callback or utility.BlankFunction
-        _self.Flags[info.Flag] = _self.Flags[info.Flag] or info.Default or Color3.new(1,1,1)
-
-        if info.SavingDisabled then
-            _self.Flags[info.Flag] = info.Default
-        end
-
-        if info.CallbackOnCreation then
-            coroutine.wrap(info.Callback)(_self.Flags[info.Flag])
-        end
-
-        section.elementNum = section.elementNum+1
-
-        local elementNum = section.elementNum
-
-        local function createElement()
-            -- Generated using RoadToGlory's Converter v1.1 (RoadToGlory#9879)
-            local Converted = {
-                ["_9_ColorPicker"] = Instance.new("Frame");
-                ["_Main"] = Instance.new("Frame");
-                ["_UICorner"] = Instance.new("UICorner");
-                ["_Fill"] = Instance.new("Frame");
-                ["_Theme"] = Instance.new("StringValue");
-                ["_Category"] = Instance.new("StringValue");
-                ["_Ignore"] = Instance.new("BoolValue");
-                ["_CurrentColor"] = Instance.new("Frame");
-                ["_UICorner1"] = Instance.new("UICorner");
-                ["_ImageLabel"] = Instance.new("ImageLabel");
-                ["_UICorner2"] = Instance.new("UICorner");
-                ["_UIAspectRatioConstraint"] = Instance.new("UIAspectRatioConstraint");
-                ["_UIStroke"] = Instance.new("UIStroke");
-                ["_Title"] = Instance.new("Frame");
-                ["_Main1"] = Instance.new("Frame");
-                ["_Title1"] = Instance.new("TextLabel");
-                ["_Theme1"] = Instance.new("StringValue");
-                ["_Category1"] = Instance.new("StringValue");
-                ["_Ignore1"] = Instance.new("BoolValue");
-                ["_Warning"] = Instance.new("ImageLabel");
-                ["_Theme2"] = Instance.new("StringValue");
-                ["_Category2"] = Instance.new("StringValue");
-                ["_Ignore2"] = Instance.new("BoolValue");
-                ["_UIListLayout"] = Instance.new("UIListLayout");
-                ["_Theme3"] = Instance.new("StringValue");
-                ["_Category3"] = Instance.new("StringValue");
-                ["_Ignore3"] = Instance.new("BoolValue");
-                ["_Secondary"] = Instance.new("Frame");
-                ["_UICorner3"] = Instance.new("UICorner");
-                ["_Frame"] = Instance.new("Frame");
-                ["_Frame1"] = Instance.new("Frame");
-                ["_Frame2"] = Instance.new("Frame");
-                ["_Second"] = Instance.new("Frame");
-                ["_UICorner4"] = Instance.new("UICorner");
-                ["_UIGradient"] = Instance.new("UIGradient");
-                ["_Black"] = Instance.new("Frame");
-                ["_UIGradient1"] = Instance.new("UIGradient");
-                ["_UICorner5"] = Instance.new("UICorner");
-                ["_Frame3"] = Instance.new("Frame");
-                ["_ImageLabel1"] = Instance.new("ImageLabel");
-                ["_Button"] = Instance.new("TextButton");
-                ["_Rainbow"] = Instance.new("Frame");
-                ["_Rainbow1"] = Instance.new("UIGradient");
-                ["_UICorner6"] = Instance.new("UICorner");
-                ["_Frame4"] = Instance.new("Frame");
-                ["_UICorner7"] = Instance.new("UICorner");
-                ["_ImageLabel2"] = Instance.new("ImageLabel");
-                ["_UIAspectRatioConstraint1"] = Instance.new("UIAspectRatioConstraint");
-                ["_Button1"] = Instance.new("TextButton");
-                ["_UIAspectRatioConstraint2"] = Instance.new("UIAspectRatioConstraint");
-                ["_UIListLayout1"] = Instance.new("UIListLayout");
-                ["_Element"] = Instance.new("StringValue");
-            }
-
-            --Properties
-
-            Converted["_9_ColorPicker"].AutomaticSize = Enum.AutomaticSize.Y
-            Converted["_9_ColorPicker"].BackgroundColor3 = Color3.fromRGB(28.000000230968, 28.000000230968, 28.000000230968)
-            Converted["_9_ColorPicker"].BackgroundTransparency = 1
-            Converted["_9_ColorPicker"].Size = UDim2.new(1, 0, 0, 1)
-            Converted["_9_ColorPicker"].Name = "9_ColorPicker"
-
-            Converted["_Main"].BackgroundColor3 = Color3.fromRGB(28.000000230968, 28.000000230968, 28.000000230968)
-            Converted["_Main"].Size = UDim2.new(1, 0, 0, 35)
-            Converted["_Main"].Name = "Main"
-            Converted["_Main"].Parent = Converted["_9_ColorPicker"]
-
-            Converted["_UICorner"].CornerRadius = UDim.new(0, 4)
-            Converted["_UICorner"].Parent = Converted["_Main"]
-
-            Converted["_Fill"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Fill"].BackgroundColor3 = Color3.fromRGB(28.000000230968, 28.000000230968, 28.000000230968)
-            Converted["_Fill"].BorderSizePixel = 0
-            Converted["_Fill"].Position = UDim2.new(0, 0, 1, 0)
-            Converted["_Fill"].Size = UDim2.new(1, 0, 0, 8)
-            Converted["_Fill"].Visible = false
-            Converted["_Fill"].ZIndex = 0
-            Converted["_Fill"].Name = "Fill"
-            Converted["_Fill"].Parent = Converted["_Main"]
-
-            Converted["_Theme"].Value = "BackgroundColor3"
-            Converted["_Theme"].Name = "Theme"
-            Converted["_Theme"].Parent = Converted["_Fill"]
-
-            Converted["_Category"].Value = "Element"
-            Converted["_Category"].Name = "Category"
-            Converted["_Category"].Parent = Converted["_Theme"]
-
-            Converted["_Ignore"].Name = "Ignore"
-            Converted["_Ignore"].Parent = Converted["_Theme"]
-
-            Converted["_CurrentColor"].AnchorPoint = Vector2.new(1, 0.5)
-            Converted["_CurrentColor"].BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-            Converted["_CurrentColor"].Position = UDim2.new(1, -10, 0.5, 0)
-            Converted["_CurrentColor"].Size = UDim2.new(0, 40, 0, 20)
-            Converted["_CurrentColor"].Name = "CurrentColor"
-            Converted["_CurrentColor"].Parent = Converted["_Main"]
-
-            Converted["_UICorner1"].CornerRadius = UDim.new(0, 7)
-            Converted["_UICorner1"].Parent = Converted["_CurrentColor"]
-
-            Converted["_ImageLabel"].Image = "rbxassetid://10968541736"
-            Converted["_ImageLabel"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_ImageLabel"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_ImageLabel"].BackgroundTransparency = 1
-            Converted["_ImageLabel"].Position = UDim2.new(0.5, 0, 0.5, 0)
-            Converted["_ImageLabel"].Size = UDim2.new(0.899999976, 0, 0.899999976, 0)
-            Converted["_ImageLabel"].Visible = false
-            Converted["_ImageLabel"].ZIndex = 3
-            Converted["_ImageLabel"].Parent = Converted["_CurrentColor"]
-
-            Converted["_UICorner2"].Parent = Converted["_ImageLabel"]
-
-            Converted["_UIAspectRatioConstraint"].Parent = Converted["_ImageLabel"]
-
-            Converted["_UIStroke"].Color = Color3.fromRGB(18.000000827014446, 18.000000827014446, 18.000000827014446)
-            Converted["_UIStroke"].Parent = Converted["_CurrentColor"]
-
-            Converted["_Title"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Title"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title"].BackgroundTransparency = 1
-            Converted["_Title"].Position = UDim2.new(-0, 9, 0.5, 0)
-            Converted["_Title"].Size = UDim2.new(0.936999977, -45, 0, 14)
-            Converted["_Title"].Name = "Title"
-            Converted["_Title"].Parent = Converted["_Main"]
-
-            Converted["_Main1"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Main1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Main1"].BackgroundTransparency = 1
-            Converted["_Main1"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Main1"].Name = "Main"
-            Converted["_Main1"].Parent = Converted["_Title"]
-
-            Converted["_Title1"].Font = Enum.Font.GothamMedium
-            Converted["_Title1"].Text = "Color Picker"
-            Converted["_Title1"].TextColor3 = Color3.fromRGB(225.00000178813934, 225.00000178813934, 225.00000178813934)
-            Converted["_Title1"].TextSize = 14
-            Converted["_Title1"].TextTruncate = Enum.TextTruncate.AtEnd
-            Converted["_Title1"].TextWrapped = true
-            Converted["_Title1"].TextXAlignment = Enum.TextXAlignment.Left
-            Converted["_Title1"].AutomaticSize = Enum.AutomaticSize.X
-            Converted["_Title1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Title1"].BackgroundTransparency = 1
-            Converted["_Title1"].Size = UDim2.new(0, 1, 1, 0)
-            Converted["_Title1"].Name = "Title"
-            Converted["_Title1"].Parent = Converted["_Main1"]
-
-            Converted["_Theme1"].Value = "TextColor3"
-            Converted["_Theme1"].Name = "Theme"
-            Converted["_Theme1"].Parent = Converted["_Title1"]
-
-            Converted["_Category1"].Value = "Symbols"
-            Converted["_Category1"].Name = "Category"
-            Converted["_Category1"].Parent = Converted["_Theme1"]
-
-            Converted["_Ignore1"].Name = "Ignore"
-            Converted["_Ignore1"].Parent = Converted["_Theme1"]
-
-            Converted["_Warning"].Image = "http://www.roblox.com/asset/?id=10969141992"
-            Converted["_Warning"].ImageColor3 = Color3.fromRGB(255, 249.0000155568123, 53.000004440546036)
-            Converted["_Warning"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Warning"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Warning"].BackgroundTransparency = 1
-            Converted["_Warning"].Size = UDim2.new(0, 16, 0, 16)
-            Converted["_Warning"].Visible = false
-            Converted["_Warning"].Name = "Warning"
-            Converted["_Warning"].Parent = Converted["_Title"]
-
-            Converted["_Theme2"].Value = "ImageColor3"
-            Converted["_Theme2"].Name = "Theme"
-            Converted["_Theme2"].Parent = Converted["_Warning"]
-
-            Converted["_Category2"].Value = "Warning"
-            Converted["_Category2"].Name = "Category"
-            Converted["_Category2"].Parent = Converted["_Theme2"]
-
-            Converted["_Ignore2"].Name = "Ignore"
-            Converted["_Ignore2"].Parent = Converted["_Theme2"]
-
-            Converted["_UIListLayout"].Padding = UDim.new(0, 2)
-            Converted["_UIListLayout"].FillDirection = Enum.FillDirection.Horizontal
-            Converted["_UIListLayout"].SortOrder = Enum.SortOrder.LayoutOrder
-            Converted["_UIListLayout"].VerticalAlignment = Enum.VerticalAlignment.Bottom
-            Converted["_UIListLayout"].Parent = Converted["_Title"]
-
-            Converted["_Theme3"].Value = "BackgroundColor3"
-            Converted["_Theme3"].Name = "Theme"
-            Converted["_Theme3"].Parent = Converted["_Main"]
-
-            Converted["_Category3"].Value = "Element"
-            Converted["_Category3"].Name = "Category"
-            Converted["_Category3"].Parent = Converted["_Theme3"]
-
-            Converted["_Ignore3"].Name = "Ignore"
-            Converted["_Ignore3"].Parent = Converted["_Theme3"]
-
-            Converted["_Secondary"].BackgroundColor3 = Color3.fromRGB(28.000000230968, 28.000000230968, 28.000000230968)
-            Converted["_Secondary"].BorderSizePixel = 0
-            Converted["_Secondary"].ClipsDescendants = true
-            Converted["_Secondary"].Position = UDim2.new(0, 0, 0, 35)
-            Converted["_Secondary"].Size = UDim2.new(1, 0, 0, 118)
-            Converted["_Secondary"].Visible = false
-            Converted["_Secondary"].Name = "Secondary"
-            Converted["_Secondary"].Parent = Converted["_9_ColorPicker"]
-
-            Converted["_UICorner3"].CornerRadius = UDim.new(0, 4)
-            Converted["_UICorner3"].Parent = Converted["_Secondary"]
-
-            Converted["_Frame"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Frame"].BackgroundTransparency = 1
-            Converted["_Frame"].Size = UDim2.new(1, 0, 0, 118)
-            Converted["_Frame"].Parent = Converted["_Secondary"]
-
-            Converted["_Frame1"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_Frame1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Frame1"].BackgroundTransparency = 1
-            Converted["_Frame1"].Position = UDim2.new(0.5, 0, 0.5, 0)
-            Converted["_Frame1"].Size = UDim2.new(0.899999976, 0, 0.880999982, 0)
-            Converted["_Frame1"].Parent = Converted["_Frame"]
-
-            Converted["_Frame2"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_Frame2"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Frame2"].BackgroundTransparency = 1
-            Converted["_Frame2"].Position = UDim2.new(0.5, 0, 0.5, 0)
-            Converted["_Frame2"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_Frame2"].Parent = Converted["_Frame1"]
-
-            Converted["_Second"].Active = true
-            Converted["_Second"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Second"].Size = UDim2.new(0.872727275, 0, 0.980769217, 0)
-            Converted["_Second"].Name = "Second"
-            Converted["_Second"].Parent = Converted["_Frame2"]
-
-            Converted["_UICorner4"].CornerRadius = UDim.new(0, 3)
-            Converted["_UICorner4"].Parent = Converted["_Second"]
-
-            Converted["_UIGradient"].Color = ColorSequence.new{
-                ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
-                ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 255, 0))
-            }
-            Converted["_UIGradient"].Parent = Converted["_Second"]
-
-            Converted["_Black"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Black"].BorderSizePixel = 0
-            Converted["_Black"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_Black"].Name = "Black"
-            Converted["_Black"].Parent = Converted["_Second"]
-
-            Converted["_UIGradient1"].Color = ColorSequence.new{
-                ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 0, 0)),
-                ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 0, 0))
-            }
-            Converted["_UIGradient1"].Rotation = 90
-            Converted["_UIGradient1"].Transparency = NumberSequence.new{
-                NumberSequenceKeypoint.new(0, 1),
-                NumberSequenceKeypoint.new(1, 0)
-            }
-            Converted["_UIGradient1"].Parent = Converted["_Black"]
-
-            Converted["_UICorner5"].CornerRadius = UDim.new(0, 2)
-            Converted["_UICorner5"].Parent = Converted["_Black"]
-
-            Converted["_Frame3"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_Frame3"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Frame3"].BackgroundTransparency = 1
-            Converted["_Frame3"].Position = UDim2.new(1, 0, 0, 0)
-            Converted["_Frame3"].Size = UDim2.new(0, 18, 0, 18)
-            Converted["_Frame3"].Parent = Converted["_Black"]
-
-            Converted["_ImageLabel1"].Image = "rbxassetid://4805639000"
-            Converted["_ImageLabel1"].SliceCenter = Rect.new(128, 128, 128, 128)
-            Converted["_ImageLabel1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_ImageLabel1"].BackgroundTransparency = 1
-            Converted["_ImageLabel1"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_ImageLabel1"].Parent = Converted["_Frame3"]
-
-            Converted["_Button"].Font = Enum.Font.SourceSans
-            Converted["_Button"].Text = ""
-            Converted["_Button"].TextColor3 = Color3.fromRGB(0, 0, 0)
-            Converted["_Button"].TextSize = 14
-            Converted["_Button"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Button"].BackgroundTransparency = 1
-            Converted["_Button"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_Button"].Name = "Button"
-            Converted["_Button"].Parent = Converted["_Second"]
-
-            Converted["_Rainbow"].AnchorPoint = Vector2.new(1, 0)
-            Converted["_Rainbow"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Rainbow"].Position = UDim2.new(1, 0, 0, 0)
-            Converted["_Rainbow"].Size = UDim2.new(0.0909090936, 0, 0.961538434, 0)
-            Converted["_Rainbow"].Name = "Rainbow"
-            Converted["_Rainbow"].Parent = Converted["_Frame2"]
-
-            Converted["_Rainbow1"].Color = ColorSequence.new{
-                ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 0, 4.000000236555934)),
-                ColorSequenceKeypoint.new(0.20000000298023224, Color3.fromRGB(255, 255, 0)),
-                ColorSequenceKeypoint.new(0.4000000059604645, Color3.fromRGB(0, 255, 0)),
-                ColorSequenceKeypoint.new(0.6000000238418579, Color3.fromRGB(0, 255, 255)),
-                ColorSequenceKeypoint.new(0.800000011920929, Color3.fromRGB(0, 0, 255)),
-                ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 0, 255))
-            }
-            Converted["_Rainbow1"].Rotation = 90
-            Converted["_Rainbow1"].Name = "Rainbow"
-            Converted["_Rainbow1"].Parent = Converted["_Rainbow"]
-
-            Converted["_UICorner6"].CornerRadius = UDim.new(0, 3)
-            Converted["_UICorner6"].Parent = Converted["_Rainbow"]
-
-            Converted["_Frame4"].AnchorPoint = Vector2.new(0, 0.5)
-            Converted["_Frame4"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Frame4"].BackgroundTransparency = 1
-            Converted["_Frame4"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_Frame4"].Parent = Converted["_Rainbow"]
-
-            Converted["_UICorner7"].CornerRadius = UDim.new(1, 0)
-            Converted["_UICorner7"].Parent = Converted["_Frame4"]
-
-            Converted["_ImageLabel2"].Image = "rbxassetid://4805639000"
-            Converted["_ImageLabel2"].SliceCenter = Rect.new(128, 128, 128, 128)
-            Converted["_ImageLabel2"].AnchorPoint = Vector2.new(0.5, 0.5)
-            Converted["_ImageLabel2"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_ImageLabel2"].BackgroundTransparency = 1
-            Converted["_ImageLabel2"].Position = UDim2.new(0.5, 0, 0.5, 0)
-            Converted["_ImageLabel2"].Size = UDim2.new(0, 18, 0, 18)
-            Converted["_ImageLabel2"].Parent = Converted["_Frame4"]
-
-            Converted["_UIAspectRatioConstraint1"].Parent = Converted["_Frame4"]
-
-            Converted["_Button1"].Font = Enum.Font.SourceSans
-            Converted["_Button1"].Text = ""
-            Converted["_Button1"].TextColor3 = Color3.fromRGB(0, 0, 0)
-            Converted["_Button1"].TextSize = 14
-            Converted["_Button1"].BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-            Converted["_Button1"].BackgroundTransparency = 1
-            Converted["_Button1"].Size = UDim2.new(1, 0, 1, 0)
-            Converted["_Button1"].Name = "Button"
-            Converted["_Button1"].Parent = Converted["_Rainbow"]
-
-            Converted["_UIAspectRatioConstraint2"].AspectRatio = 2.5999999046325684
-            Converted["_UIAspectRatioConstraint2"].Parent = Converted["_Frame2"]
-
-            Converted["_UIListLayout1"].HorizontalAlignment = Enum.HorizontalAlignment.Center
-            Converted["_UIListLayout1"].Parent = Converted["_9_ColorPicker"]
-
-            Converted["_Element"].Value = "ColorPicker"
-            Converted["_Element"].Name = "Element"
-            Converted["_Element"].Parent = Converted["_9_ColorPicker"]
-
-            return Converted["_9_ColorPicker"]
-        end
-
-        local element = createElement()
-
-        local movingWithCursor = function()
-            return false
-        end
-
-        do -- dropdown
-            local open = false
-            local tween1 = nil
-
-            local openProperty = UDim2.new(1, 0, 0, 118)
-            local closeProperty = UDim2.new(1, 0, 0, 0)
-
-            local tweenInfo = TweenInfo.new(0.25,Enum.EasingStyle.Sine,Enum.EasingDirection.In,0,false,0)
-
-            element.Secondary.Visible = false
-
-            local function toggleDropdown()
-                open = not open
-                pcall(function()
-                    tween1:Cancel()
-                    tween1:Destroy()
-                end)
-                if open then
-                    element.Main.Fill.Visible = true
-                    element.Secondary.Visible = true
-                    element.Secondary.Size = closeProperty
-                end
-                tween1 = TS:Create(element.Secondary,tweenInfo,{
-                    ["Size"] = open and openProperty or closeProperty
-                })
-                if not open then
-                    tween1.Completed:Connect(function(p)
-                        if p==Enum.PlaybackState.Completed then
-                            element.Main.Fill.Visible = false
-                            element.Secondary.Visible = false
-                        end
-                    end)
-                end
-                tween1:Play()
-            end
-
-            local currentcolor = element.Main.CurrentColor
-            local btn = utility:CreateButtonObject(currentcolor.Parent)
-            local pencil = element.Main.CurrentColor.ImageLabel
-
-            local hovering = false
-            btn.MouseEnter:Connect(function()
-                hovering = true
-            end)
-            btn.MouseLeave:Connect(function()
-                hovering = false
-            end)
-            table.insert(_self._connections,UIS.WindowFocusReleased:Connect(function()
-                hovering = false
-            end))
-            LPH_JIT_MAX(function()
-                table.insert(_self._connections,Run.RenderStepped:Connect(function()
-                    pencil.Visible = (not movingWithCursor()) and hovering
-                    pencil.ImageColor3 = utility:GetTextContrast(currentcolor.BackgroundColor3)
-                    currentcolor.BackgroundColor3 = _self.Flags[info.Flag]
-                end))
-            end)()
-            btn.Activated:Connect(toggleDropdown)
-        end
-
-        do -- color picking
-            local frame = element.Secondary.Frame.Frame.Frame
-            
-            local rainbow = frame.Rainbow
-            local second = frame.Second
-            local rainbowBtn = rainbow.Button
-            local secondBtn = second.Button
-
-            local d1 = false
-            local d2 = false
-
-            rainbowBtn.MouseButton1Down:Connect(function()
-                d1 = true
-                d2 = false
-            end)
-
-            secondBtn.MouseButton1Down:Connect(function()
-                d2 = true
-                d1 = false
-            end)
-
-            table.insert(_self._connections,UIS.InputEnded:Connect(function(inp)
-                if inp.UserInputType==Enum.UserInputType.MouseButton1 then
-                    d1 = false
-                    d2 = false
-                end
-            end))
-
-            movingWithCursor = function()
-                return d1 or d2
-            end
-
-            LPH_JIT_MAX(function()
-                local ad1,ad2,l = nil,nil,_self.Flags[info.Flag]
-                table.insert(_self._connections,Run.RenderStepped:Connect(function()
-                    if d1 then
-                        local percentY = math.clamp((mouse.Y-rainbow.AbsolutePosition.Y)/rainbow.AbsoluteSize.Y,0,1)
-                        rainbow.Frame.Position = UDim2.fromScale(0,percentY)
-                    elseif d2 then
-                        local percentX = math.clamp((mouse.X-second.AbsolutePosition.X)/second.AbsoluteSize.X,0,1)
-                        local percentY = math.clamp((mouse.Y-second.AbsolutePosition.Y)/second.AbsoluteSize.Y,0,1)
-                        second.Black.Frame.Position = UDim2.fromScale(percentX,percentY)
-                    end
-                    if ad1 or ad2 or l~=_self.Flags[info.Flag] then
-                        local baseColor = utility:GetColor(rainbow.Frame.Position.Y.Scale,rainbow.Rainbow.Color.Keypoints)
-                        local percent_x = second.Black.Frame.Position.X.Scale
-                        local percent_y = second.Black.Frame.Position.Y.Scale
-                        local mod1Color = Color3.new(utility:Lerp(1,baseColor.R,percent_x),utility:Lerp(1,baseColor.G,percent_x),utility:Lerp(1,baseColor.B,percent_x))
-                        local final = Color3.new(utility:Lerp(mod1Color.R,0,percent_y),utility:Lerp(mod1Color.G,0,percent_y),utility:Lerp(mod1Color.B,0,percent_y))
-                        _self.Flags[info.Flag] = final
-                        info.Callback(final)
-                        l = final
-                        second.UIGradient.Color = ColorSequence.new({ColorSequenceKeypoint.new(0, Color3.new(1,1,1)),ColorSequenceKeypoint.new(1, baseColor)})
-                    end
-                    ad1,ad2 = d1,d2
-                end))
-            end)()
-        end
-
-        info.WarningIcon = info.WarningIcon or Library.Icons.Warning
-        element.Main.Title.Warning.Image = "http://www.roblox.com/asset/?id="..info.WarningIcon
-        if info.Warning then
-            element.Main.Title.Warning.ImageColor3 = Color3.new(1,1,1)
-            element.Main.Title.Warning.Visible = true
-            local hint = utility:CreateHint()
-            hint.Value = info.Warning
-            hint.Parent = element.Main.Title.Warning
-        end
-
-        element.Main.Title.Main.Title.Text = info.Name
-        element.Name = string.rep("_",elementNum)..info.Name
-        element.Parent = section.holder.Contents
-
-    end
+if debugX then
+	warn('Now Loading Settings Configuration')
 end
 
-warn("Atlas UI Library v"..VERSION.." by RoadToGlory#9879 has initiated (Modified Version by fallen.starn)")
-print("2nd fix x0123")
-return Library
+loadSettings()
+
+if debugX then
+	warn('Settings Loaded')
+end
+
+local analyticsLib
+local sendReport = function(ev_n, sc_n) warn("Failed to load report function") end
+if not requestsDisabled then
+	if debugX then
+		warn('Querying Settings for Reporter Information')
+	end	
+	analyticsLib = loadWithTimeout("https://analytics.sirius.menu/script")
+	if not analyticsLib then
+		warn("Failed to load analytics reporter")
+		analyticsLib = nil
+	elseif analyticsLib and type(analyticsLib.load) == "function" then
+		analyticsLib:load()
+	else
+		warn("Analytics library loaded but missing load function")
+		analyticsLib = nil
+	end
+	sendReport = function(ev_n, sc_n)
+		if not (type(analyticsLib) == "table" and type(analyticsLib.isLoaded) == "function" and analyticsLib:isLoaded()) then
+			warn("Analytics library not loaded")
+			return
+		end
+		if useStudio then
+			print('Sending Analytics')
+		else
+			if debugX then warn('Reporting Analytics') end
+			analyticsLib:report(
+				{
+					["name"] = ev_n,
+					["script"] = {["name"] = sc_n, ["version"] = Release}
+				},
+				{
+					["version"] = InterfaceBuild
+				}
+			)
+			if debugX then warn('Finished Report') end
+		end
+	end
+	if cachedSettings and (#cachedSettings == 0 or (cachedSettings.System and cachedSettings.System.usageAnalytics and cachedSettings.System.usageAnalytics.Value)) then
+		sendReport("execution", "Rayfield")
+	elseif not cachedSettings then
+		sendReport("execution", "Rayfield")
+	end
+end
+
+local promptUser = 2
+
+if promptUser == 1 and prompt and type(prompt.create) == "function" then
+	prompt.create(
+		'Be cautious when running scripts',
+	    [[Please be careful when running scripts from unknown developers. This script has already been ran.
+
+<font transparency='0.3'>Some scripts may steal your items or in-game goods.</font>]],
+		'Okay',
+		'',
+		function()
+
+		end
+	)
+end
+
+if debugX then
+	warn('Moving on to continue initialisation')
+end
+
+local RayfieldLibrary = {
+	Flags = {},
+	Theme = {
+		Default = {
+			TextColor = Color3.fromRGB(240, 240, 240),
+
+			Background = Color3.fromRGB(25, 25, 25),
+			Topbar = Color3.fromRGB(34, 34, 34),
+			Shadow = Color3.fromRGB(20, 20, 20),
+
+			NotificationBackground = Color3.fromRGB(20, 20, 20),
+			NotificationActionsBackground = Color3.fromRGB(230, 230, 230),
+
+			TabBackground = Color3.fromRGB(80, 80, 80),
+			TabStroke = Color3.fromRGB(85, 85, 85),
+			TabBackgroundSelected = Color3.fromRGB(210, 210, 210),
+			TabTextColor = Color3.fromRGB(240, 240, 240),
+			SelectedTabTextColor = Color3.fromRGB(50, 50, 50),
+
+			ElementBackground = Color3.fromRGB(35, 35, 35),
+			ElementBackgroundHover = Color3.fromRGB(40, 40, 40),
+			SecondaryElementBackground = Color3.fromRGB(25, 25, 25),
+			ElementStroke = Color3.fromRGB(50, 50, 50),
+			SecondaryElementStroke = Color3.fromRGB(40, 40, 40),
+
+			SliderBackground = Color3.fromRGB(50, 138, 220),
+			SliderProgress = Color3.fromRGB(50, 138, 220),
+			SliderStroke = Color3.fromRGB(58, 163, 255),
+
+			ToggleBackground = Color3.fromRGB(30, 30, 30),
+			ToggleEnabled = Color3.fromRGB(0, 146, 214),
+			ToggleDisabled = Color3.fromRGB(100, 100, 100),
+			ToggleEnabledStroke = Color3.fromRGB(0, 170, 255),
+			ToggleDisabledStroke = Color3.fromRGB(125, 125, 125),
+			ToggleEnabledOuterStroke = Color3.fromRGB(100, 100, 100),
+			ToggleDisabledOuterStroke = Color3.fromRGB(65, 65, 65),
+
+			DropdownSelected = Color3.fromRGB(40, 40, 40),
+			DropdownUnselected = Color3.fromRGB(30, 30, 30),
+
+			InputBackground = Color3.fromRGB(30, 30, 30),
+			InputStroke = Color3.fromRGB(65, 65, 65),
+			PlaceholderColor = Color3.fromRGB(178, 178, 178)
+		},
+
+		Ocean = {
+			TextColor = Color3.fromRGB(230, 240, 240),
+
+			Background = Color3.fromRGB(20, 30, 30),
+			Topbar = Color3.fromRGB(25, 40, 40),
+			Shadow = Color3.fromRGB(15, 20, 20),
+
+			NotificationBackground = Color3.fromRGB(25, 35, 35),
+			NotificationActionsBackground = Color3.fromRGB(230, 240, 240),
+
+			TabBackground = Color3.fromRGB(40, 60, 60),
+			TabStroke = Color3.fromRGB(50, 70, 70),
+			TabBackgroundSelected = Color3.fromRGB(100, 180, 180),
+			TabTextColor = Color3.fromRGB(210, 230, 230),
+			SelectedTabTextColor = Color3.fromRGB(20, 50, 50),
+
+			ElementBackground = Color3.fromRGB(30, 50, 50),
+			ElementBackgroundHover = Color3.fromRGB(40, 60, 60),
+			SecondaryElementBackground = Color3.fromRGB(30, 45, 45),
+			ElementStroke = Color3.fromRGB(45, 70, 70),
+			SecondaryElementStroke = Color3.fromRGB(40, 65, 65),
+
+			SliderBackground = Color3.fromRGB(0, 110, 110),
+			SliderProgress = Color3.fromRGB(0, 140, 140),
+			SliderStroke = Color3.fromRGB(0, 160, 160),
+
+			ToggleBackground = Color3.fromRGB(30, 50, 50),
+			ToggleEnabled = Color3.fromRGB(0, 130, 130),
+			ToggleDisabled = Color3.fromRGB(70, 90, 90),
+			ToggleEnabledStroke = Color3.fromRGB(0, 160, 160),
+			ToggleDisabledStroke = Color3.fromRGB(85, 105, 105),
+			ToggleEnabledOuterStroke = Color3.fromRGB(50, 100, 100),
+			ToggleDisabledOuterStroke = Color3.fromRGB(45, 65, 65),
+
+			DropdownSelected = Color3.fromRGB(30, 60, 60),
+			DropdownUnselected = Color3.fromRGB(25, 40, 40),
+
+			InputBackground = Color3.fromRGB(30, 50, 50),
+			InputStroke = Color3.fromRGB(50, 70, 70),
+			PlaceholderColor = Color3.fromRGB(140, 160, 160)
+		},
+
+		AmberGlow = {
+			TextColor = Color3.fromRGB(255, 245, 230),
+
+			Background = Color3.fromRGB(45, 30, 20),
+			Topbar = Color3.fromRGB(55, 40, 25),
+			Shadow = Color3.fromRGB(35, 25, 15),
+
+			NotificationBackground = Color3.fromRGB(50, 35, 25),
+			NotificationActionsBackground = Color3.fromRGB(245, 230, 215),
+
+			TabBackground = Color3.fromRGB(75, 50, 35),
+			TabStroke = Color3.fromRGB(90, 60, 45),
+			TabBackgroundSelected = Color3.fromRGB(230, 180, 100),
+			TabTextColor = Color3.fromRGB(250, 220, 200),
+			SelectedTabTextColor = Color3.fromRGB(50, 30, 10),
+
+			ElementBackground = Color3.fromRGB(60, 45, 35),
+			ElementBackgroundHover = Color3.fromRGB(70, 50, 40),
+			SecondaryElementBackground = Color3.fromRGB(55, 40, 30),
+			ElementStroke = Color3.fromRGB(85, 60, 45),
+			SecondaryElementStroke = Color3.fromRGB(75, 50, 35),
+
+			SliderBackground = Color3.fromRGB(220, 130, 60),
+			SliderProgress = Color3.fromRGB(250, 150, 75),
+			SliderStroke = Color3.fromRGB(255, 170, 85),
+
+			ToggleBackground = Color3.fromRGB(55, 40, 30),
+			ToggleEnabled = Color3.fromRGB(240, 130, 30),
+			ToggleDisabled = Color3.fromRGB(90, 70, 60),
+			ToggleEnabledStroke = Color3.fromRGB(255, 160, 50),
+			ToggleDisabledStroke = Color3.fromRGB(110, 85, 75),
+			ToggleEnabledOuterStroke = Color3.fromRGB(200, 100, 50),
+			ToggleDisabledOuterStroke = Color3.fromRGB(75, 60, 55),
+
+			DropdownSelected = Color3.fromRGB(70, 50, 40),
+			DropdownUnselected = Color3.fromRGB(55, 40, 30),
+
+			InputBackground = Color3.fromRGB(60, 45, 35),
+			InputStroke = Color3.fromRGB(90, 65, 50),
+			PlaceholderColor = Color3.fromRGB(190, 150, 130)
+		},
+
+		Light = {
+			TextColor = Color3.fromRGB(40, 40, 40),
+
+			Background = Color3.fromRGB(245, 245, 245),
+			Topbar = Color3.fromRGB(230, 230, 230),
+			Shadow = Color3.fromRGB(200, 200, 200),
+
+			NotificationBackground = Color3.fromRGB(250, 250, 250),
+			NotificationActionsBackground = Color3.fromRGB(240, 240, 240),
+
+			TabBackground = Color3.fromRGB(235, 235, 235),
+			TabStroke = Color3.fromRGB(215, 215, 215),
+			TabBackgroundSelected = Color3.fromRGB(255, 255, 255),
+			TabTextColor = Color3.fromRGB(80, 80, 80),
+			SelectedTabTextColor = Color3.fromRGB(0, 0, 0),
+
+			ElementBackground = Color3.fromRGB(240, 240, 240),
+			ElementBackgroundHover = Color3.fromRGB(225, 225, 225),
+			SecondaryElementBackground = Color3.fromRGB(235, 235, 235),
+			ElementStroke = Color3.fromRGB(210, 210, 210),
+			SecondaryElementStroke = Color3.fromRGB(210, 210, 210),
+
+			SliderBackground = Color3.fromRGB(150, 180, 220),
+			SliderProgress = Color3.fromRGB(100, 150, 200), 
+			SliderStroke = Color3.fromRGB(120, 170, 220),
+
+			ToggleBackground = Color3.fromRGB(220, 220, 220),
+			ToggleEnabled = Color3.fromRGB(0, 146, 214),
+			ToggleDisabled = Color3.fromRGB(150, 150, 150),
+			ToggleEnabledStroke = Color3.fromRGB(0, 170, 255),
+			ToggleDisabledStroke = Color3.fromRGB(170, 170, 170),
+			ToggleEnabledOuterStroke = Color3.fromRGB(100, 100, 100),
+			ToggleDisabledOuterStroke = Color3.fromRGB(180, 180, 180),
+
+			DropdownSelected = Color3.fromRGB(230, 230, 230),
+			DropdownUnselected = Color3.fromRGB(220, 220, 220),
+
+			InputBackground = Color3.fromRGB(240, 240, 240),
+			InputStroke = Color3.fromRGB(180, 180, 180),
+			PlaceholderColor = Color3.fromRGB(140, 140, 140)
+		},
+
+		Amethyst = {
+			TextColor = Color3.fromRGB(240, 240, 240),
+
+			Background = Color3.fromRGB(30, 20, 40),
+			Topbar = Color3.fromRGB(40, 25, 50),
+			Shadow = Color3.fromRGB(20, 15, 30),
+
+			NotificationBackground = Color3.fromRGB(35, 20, 40),
+			NotificationActionsBackground = Color3.fromRGB(240, 240, 250),
+
+			TabBackground = Color3.fromRGB(60, 40, 80),
+			TabStroke = Color3.fromRGB(70, 45, 90),
+			TabBackgroundSelected = Color3.fromRGB(180, 140, 200),
+			TabTextColor = Color3.fromRGB(230, 230, 240),
+			SelectedTabTextColor = Color3.fromRGB(50, 20, 50),
+
+			ElementBackground = Color3.fromRGB(45, 30, 60),
+			ElementBackgroundHover = Color3.fromRGB(50, 35, 70),
+			SecondaryElementBackground = Color3.fromRGB(40, 30, 55),
+			ElementStroke = Color3.fromRGB(70, 50, 85),
+			SecondaryElementStroke = Color3.fromRGB(65, 45, 80),
+
+			SliderBackground = Color3.fromRGB(100, 60, 150),
+			SliderProgress = Color3.fromRGB(130, 80, 180),
+			SliderStroke = Color3.fromRGB(150, 100, 200),
+
+			ToggleBackground = Color3.fromRGB(45, 30, 55),
+			ToggleEnabled = Color3.fromRGB(120, 60, 150),
+			ToggleDisabled = Color3.fromRGB(94, 47, 117),
+			ToggleEnabledStroke = Color3.fromRGB(140, 80, 170),
+			ToggleDisabledStroke = Color3.fromRGB(124, 71, 150),
+			ToggleEnabledOuterStroke = Color3.fromRGB(90, 40, 120),
+			ToggleDisabledOuterStroke = Color3.fromRGB(80, 50, 110),
+
+			DropdownSelected = Color3.fromRGB(50, 35, 70),
+			DropdownUnselected = Color3.fromRGB(35, 25, 50),
+
+			InputBackground = Color3.fromRGB(45, 30, 60),
+			InputStroke = Color3.fromRGB(80, 50, 110),
+			PlaceholderColor = Color3.fromRGB(178, 150, 200)
+		},
+
+		Green = {
+			TextColor = Color3.fromRGB(30, 60, 30),
+
+			Background = Color3.fromRGB(235, 245, 235),
+			Topbar = Color3.fromRGB(210, 230, 210),
+			Shadow = Color3.fromRGB(200, 220, 200),
+
+			NotificationBackground = Color3.fromRGB(240, 250, 240),
+			NotificationActionsBackground = Color3.fromRGB(220, 235, 220),
+
+			TabBackground = Color3.fromRGB(215, 235, 215),
+			TabStroke = Color3.fromRGB(190, 210, 190),
+			TabBackgroundSelected = Color3.fromRGB(245, 255, 245),
+			TabTextColor = Color3.fromRGB(50, 80, 50),
+			SelectedTabTextColor = Color3.fromRGB(20, 60, 20),
+
+			ElementBackground = Color3.fromRGB(225, 240, 225),
+			ElementBackgroundHover = Color3.fromRGB(210, 225, 210),
+			SecondaryElementBackground = Color3.fromRGB(235, 245, 235), 
+			ElementStroke = Color3.fromRGB(180, 200, 180),
+			SecondaryElementStroke = Color3.fromRGB(180, 200, 180),
+
+			SliderBackground = Color3.fromRGB(90, 160, 90),
+			SliderProgress = Color3.fromRGB(70, 130, 70),
+			SliderStroke = Color3.fromRGB(100, 180, 100),
+
+			ToggleBackground = Color3.fromRGB(215, 235, 215),
+			ToggleEnabled = Color3.fromRGB(60, 130, 60),
+			ToggleDisabled = Color3.fromRGB(150, 175, 150),
+			ToggleEnabledStroke = Color3.fromRGB(80, 150, 80),
+			ToggleDisabledStroke = Color3.fromRGB(130, 150, 130),
+			ToggleEnabledOuterStroke = Color3.fromRGB(100, 160, 100),
+			ToggleDisabledOuterStroke = Color3.fromRGB(160, 180, 160),
+
+			DropdownSelected = Color3.fromRGB(225, 240, 225),
+			DropdownUnselected = Color3.fromRGB(210, 225, 210),
+
+			InputBackground = Color3.fromRGB(235, 245, 235),
+			InputStroke = Color3.fromRGB(180, 200, 180),
+			PlaceholderColor = Color3.fromRGB(120, 140, 120)
+		},
+
+		Bloom = {
+			TextColor = Color3.fromRGB(60, 40, 50),
+
+			Background = Color3.fromRGB(255, 240, 245),
+			Topbar = Color3.fromRGB(250, 220, 225),
+			Shadow = Color3.fromRGB(230, 190, 195),
+
+			NotificationBackground = Color3.fromRGB(255, 235, 240),
+			NotificationActionsBackground = Color3.fromRGB(245, 215, 225),
+
+			TabBackground = Color3.fromRGB(240, 210, 220),
+			TabStroke = Color3.fromRGB(230, 200, 210),
+			TabBackgroundSelected = Color3.fromRGB(255, 225, 235),
+			TabTextColor = Color3.fromRGB(80, 40, 60),
+			SelectedTabTextColor = Color3.fromRGB(50, 30, 50),
+
+			ElementBackground = Color3.fromRGB(255, 235, 240),
+			ElementBackgroundHover = Color3.fromRGB(245, 220, 230),
+			SecondaryElementBackground = Color3.fromRGB(255, 235, 240), 
+			ElementStroke = Color3.fromRGB(230, 200, 210),
+			SecondaryElementStroke = Color3.fromRGB(230, 200, 210),
+
+			SliderBackground = Color3.fromRGB(240, 130, 160),
+			SliderProgress = Color3.fromRGB(250, 160, 180),
+			SliderStroke = Color3.fromRGB(255, 180, 200),
+
+			ToggleBackground = Color3.fromRGB(240, 210, 220),
+			ToggleEnabled = Color3.fromRGB(255, 140, 170),
+			ToggleDisabled = Color3.fromRGB(200, 180, 185),
+			ToggleEnabledStroke = Color3.fromRGB(250, 160, 190),
+			ToggleDisabledStroke = Color3.fromRGB(210, 180, 190),
+			ToggleEnabledOuterStroke = Color3.fromRGB(220, 160, 180),
+			ToggleDisabledOuterStroke = Color3.fromRGB(190, 170, 180),
+
+			DropdownSelected = Color3.fromRGB(250, 220, 225),
+			DropdownUnselected = Color3.fromRGB(240, 210, 220),
+
+			InputBackground = Color3.fromRGB(255, 235, 240),
+			InputStroke = Color3.fromRGB(220, 190, 200),
+			PlaceholderColor = Color3.fromRGB(170, 130, 140)
+		},
+
+		DarkBlue = {
+			TextColor = Color3.fromRGB(230, 230, 230),
+
+			Background = Color3.fromRGB(20, 25, 30),
+			Topbar = Color3.fromRGB(30, 35, 40),
+			Shadow = Color3.fromRGB(15, 20, 25),
+
+			NotificationBackground = Color3.fromRGB(25, 30, 35),
+			NotificationActionsBackground = Color3.fromRGB(45, 50, 55),
+
+			TabBackground = Color3.fromRGB(35, 40, 45),
+			TabStroke = Color3.fromRGB(45, 50, 60),
+			TabBackgroundSelected = Color3.fromRGB(40, 70, 100),
+			TabTextColor = Color3.fromRGB(200, 200, 200),
+			SelectedTabTextColor = Color3.fromRGB(255, 255, 255),
+
+			ElementBackground = Color3.fromRGB(30, 35, 40),
+			ElementBackgroundHover = Color3.fromRGB(40, 45, 50),
+			SecondaryElementBackground = Color3.fromRGB(35, 40, 45), 
+			ElementStroke = Color3.fromRGB(45, 50, 60),
+			SecondaryElementStroke = Color3.fromRGB(40, 45, 55),
+
+			SliderBackground = Color3.fromRGB(0, 90, 180),
+			SliderProgress = Color3.fromRGB(0, 120, 210),
+			SliderStroke = Color3.fromRGB(0, 150, 240),
+
+			ToggleBackground = Color3.fromRGB(35, 40, 45),
+			ToggleEnabled = Color3.fromRGB(0, 120, 210),
+			ToggleDisabled = Color3.fromRGB(70, 70, 80),
+			ToggleEnabledStroke = Color3.fromRGB(0, 150, 240),
+			ToggleDisabledStroke = Color3.fromRGB(75, 75, 85),
+			ToggleEnabledOuterStroke = Color3.fromRGB(20, 100, 180), 
+			ToggleDisabledOuterStroke = Color3.fromRGB(55, 55, 65),
+
+			DropdownSelected = Color3.fromRGB(30, 70, 90),
+			DropdownUnselected = Color3.fromRGB(25, 30, 35),
+
+			InputBackground = Color3.fromRGB(25, 30, 35),
+			InputStroke = Color3.fromRGB(45, 50, 60), 
+			PlaceholderColor = Color3.fromRGB(150, 150, 160)
+		},
+
+		Serenity = {
+			TextColor = Color3.fromRGB(50, 55, 60),
+			Background = Color3.fromRGB(240, 245, 250),
+			Topbar = Color3.fromRGB(215, 225, 235),
+			Shadow = Color3.fromRGB(200, 210, 220),
+
+			NotificationBackground = Color3.fromRGB(210, 220, 230),
+			NotificationActionsBackground = Color3.fromRGB(225, 230, 240),
+
+			TabBackground = Color3.fromRGB(200, 210, 220),
+			TabStroke = Color3.fromRGB(180, 190, 200),
+			TabBackgroundSelected = Color3.fromRGB(175, 185, 200),
+			TabTextColor = Color3.fromRGB(50, 55, 60),
+			SelectedTabTextColor = Color3.fromRGB(30, 35, 40),
+
+			ElementBackground = Color3.fromRGB(210, 220, 230),
+			ElementBackgroundHover = Color3.fromRGB(220, 230, 240),
+			SecondaryElementBackground = Color3.fromRGB(200, 210, 220),
+			ElementStroke = Color3.fromRGB(190, 200, 210),
+			SecondaryElementStroke = Color3.fromRGB(180, 190, 200),
+
+			SliderBackground = Color3.fromRGB(200, 220, 235),  -- Lighter shade
+			SliderProgress = Color3.fromRGB(70, 130, 180),
+			SliderStroke = Color3.fromRGB(150, 180, 220),
+
+			ToggleBackground = Color3.fromRGB(210, 220, 230),
+			ToggleEnabled = Color3.fromRGB(70, 160, 210),
+			ToggleDisabled = Color3.fromRGB(180, 180, 180),
+			ToggleEnabledStroke = Color3.fromRGB(60, 150, 200),
+			ToggleDisabledStroke = Color3.fromRGB(140, 140, 140),
+			ToggleEnabledOuterStroke = Color3.fromRGB(100, 120, 140),
+			ToggleDisabledOuterStroke = Color3.fromRGB(120, 120, 130),
+
+			DropdownSelected = Color3.fromRGB(220, 230, 240),
+			DropdownUnselected = Color3.fromRGB(200, 210, 220),
+
+			InputBackground = Color3.fromRGB(220, 230, 240),
+			InputStroke = Color3.fromRGB(180, 190, 200),
+			PlaceholderColor = Color3.fromRGB(150, 150, 150)
+		},
+	}
+}
+
+
+-- Services
+local UserInputService = getService("UserInputService")
+local TweenService = getService("TweenService")
+local Players = getService("Players")
+local CoreGui = getService("CoreGui")
+
+-- Interface Management
+
+local Rayfield = useStudio and script.Parent:FindFirstChild('Rayfield') or game:GetObjects("rbxassetid://10804731440")[1]
+local buildAttempts = 0
+local correctBuild = false
+local warned
+local globalLoaded
+local rayfieldDestroyed = false -- True when RayfieldLibrary:Destroy() is called
+
+repeat
+	if Rayfield:FindFirstChild('Build') and Rayfield.Build.Value == InterfaceBuild then
+		correctBuild = true
+		break
+	end
+
+	correctBuild = false
+
+	if not warned then
+		warn('Rayfield | Build Mismatch')
+		print('Rayfield may encounter issues as you are running an incompatible interface version ('.. ((Rayfield:FindFirstChild('Build') and Rayfield.Build.Value) or 'No Build') ..').\n\nThis version of Rayfield is intended for interface build '..InterfaceBuild..'.')
+		warned = true
+	end
+
+	toDestroy, Rayfield = Rayfield, useStudio and script.Parent:FindFirstChild('Rayfield') or game:GetObjects("rbxassetid://10804731440")[1]
+	if toDestroy and not useStudio then toDestroy:Destroy() end
+
+	buildAttempts = buildAttempts + 1
+until buildAttempts >= 2
+
+Rayfield.Enabled = false
+
+if gethui then
+	Rayfield.Parent = gethui()
+elseif syn and syn.protect_gui then 
+	syn.protect_gui(Rayfield)
+	Rayfield.Parent = CoreGui
+elseif not useStudio and CoreGui:FindFirstChild("RobloxGui") then
+	Rayfield.Parent = CoreGui:FindFirstChild("RobloxGui")
+elseif not useStudio then
+	Rayfield.Parent = CoreGui
+end
+
+if gethui then
+	for _, Interface in ipairs(gethui():GetChildren()) do
+		if Interface.Name == Rayfield.Name and Interface ~= Rayfield then
+			Interface.Enabled = false
+			Interface.Name = "Rayfield-Old"
+		end
+	end
+elseif not useStudio then
+	for _, Interface in ipairs(CoreGui:GetChildren()) do
+		if Interface.Name == Rayfield.Name and Interface ~= Rayfield then
+			Interface.Enabled = false
+			Interface.Name = "Rayfield-Old"
+		end
+	end
+end
+
+
+local minSize = Vector2.new(1024, 768)
+local useMobileSizing
+
+if Rayfield.AbsoluteSize.X < minSize.X and Rayfield.AbsoluteSize.Y < minSize.Y then
+	useMobileSizing = true
+end
+
+if UserInputService.TouchEnabled then
+	useMobilePrompt = true
+end
+
+
+-- Object Variables
+
+local Main = Rayfield.Main
+local MPrompt = Rayfield:FindFirstChild('Prompt')
+local Topbar = Main.Topbar
+local Elements = Main.Elements
+local LoadingFrame = Main.LoadingFrame
+local TabList = Main.TabList
+local dragBar = Rayfield:FindFirstChild('Drag')
+local dragInteract = dragBar and dragBar.Interact or nil
+local dragBarCosmetic = dragBar and dragBar.Drag or nil
+
+local dragOffset = 255
+local dragOffsetMobile = 150
+
+Rayfield.DisplayOrder = 100
+LoadingFrame.Version.Text = Release
+
+-- Thanks to Latte Softworks for the Lucide integration for Roblox
+local Icons = useStudio and require(script.Parent.icons) or loadWithTimeout('https://raw.githubusercontent.com/SiriusSoftwareLtd/Rayfield/refs/heads/main/icons.lua')
+-- Variables
+
+local CFileName = nil
+local CEnabled = false
+local Minimised = false
+local Hidden = false
+local Debounce = false
+local searchOpen = false
+local Notifications = Rayfield.Notifications
+
+local SelectedTheme = RayfieldLibrary.Theme.Default
+
+local function ChangeTheme(Theme)
+	if typeof(Theme) == 'string' then
+		SelectedTheme = RayfieldLibrary.Theme[Theme]
+	elseif typeof(Theme) == 'table' then
+		SelectedTheme = Theme
+	end
+
+	Rayfield.Main.BackgroundColor3 = SelectedTheme.Background
+	Rayfield.Main.Topbar.BackgroundColor3 = SelectedTheme.Topbar
+	Rayfield.Main.Topbar.CornerRepair.BackgroundColor3 = SelectedTheme.Topbar
+	Rayfield.Main.Shadow.Image.ImageColor3 = SelectedTheme.Shadow
+
+	Rayfield.Main.Topbar.ChangeSize.ImageColor3 = SelectedTheme.TextColor
+	Rayfield.Main.Topbar.Hide.ImageColor3 = SelectedTheme.TextColor
+	Rayfield.Main.Topbar.Search.ImageColor3 = SelectedTheme.TextColor
+	if Topbar:FindFirstChild('Settings') then
+		Rayfield.Main.Topbar.Settings.ImageColor3 = SelectedTheme.TextColor
+		Rayfield.Main.Topbar.Divider.BackgroundColor3 = SelectedTheme.ElementStroke
+	end
+
+	Main.Search.BackgroundColor3 = SelectedTheme.TextColor
+	Main.Search.Shadow.ImageColor3 = SelectedTheme.TextColor
+	Main.Search.Search.ImageColor3 = SelectedTheme.TextColor
+	Main.Search.Input.PlaceholderColor3 = SelectedTheme.TextColor
+	Main.Search.UIStroke.Color = SelectedTheme.SecondaryElementStroke
+
+	if Main:FindFirstChild('Notice') then
+		Main.Notice.BackgroundColor3 = SelectedTheme.Background
+	end
+
+	for _, text in ipairs(Rayfield:GetDescendants()) do
+		if text.Parent.Parent ~= Notifications then
+			if text:IsA('TextLabel') or text:IsA('TextBox') then text.TextColor3 = SelectedTheme.TextColor end
+		end
+	end
+
+	for _, TabPage in ipairs(Elements:GetChildren()) do
+		for _, Element in ipairs(TabPage:GetChildren()) do
+			if Element.ClassName == "Frame" and Element.Name ~= "Placeholder" and Element.Name ~= "SectionSpacing" and Element.Name ~= "Divider" and Element.Name ~= "SectionTitle" and Element.Name ~= "SearchTitle-fsefsefesfsefesfesfThanks" then
+				Element.BackgroundColor3 = SelectedTheme.ElementBackground
+				Element.UIStroke.Color = SelectedTheme.ElementStroke
+			end
+		end
+	end
+end
+
+local function getIcon(name : string): {id: number, imageRectSize: Vector2, imageRectOffset: Vector2}
+	if not Icons then
+		warn("Lucide Icons: Cannot use icons as icons library is not loaded")
+		return
+	end
+	name = string.match(string.lower(name), "^%s*(.*)%s*$") :: string
+	local sizedicons = Icons['48px']
+	local r = sizedicons[name]
+	if not r then
+		error(`Lucide Icons: Failed to find icon by the name of "{name}"`, 2)
+	end
+
+	local rirs = r[2]
+	local riro = r[3]
+
+	if type(r[1]) ~= "number" or type(rirs) ~= "table" or type(riro) ~= "table" then
+		error("Lucide Icons: Internal error: Invalid auto-generated asset entry")
+	end
+
+	local irs = Vector2.new(rirs[1], rirs[2])
+	local iro = Vector2.new(riro[1], riro[2])
+
+	local asset = {
+		id = r[1],
+		imageRectSize = irs,
+		imageRectOffset = iro,
+	}
+
+	return asset
+end
+-- Converts ID to asset URI. Returns rbxassetid://0 if ID is not a number
+local function getAssetUri(id: any): string
+	local assetUri = "rbxassetid://0" -- Default to empty image
+	if type(id) == "number" then
+		assetUri = "rbxassetid://" .. id
+	elseif type(id) == "string" and not Icons then
+		warn("Rayfield | Cannot use Lucide icons as icons library is not loaded")
+	else
+		warn("Rayfield | The icon argument must either be an icon ID (number) or a Lucide icon name (string)")
+	end
+	return assetUri
+end
+
+local function makeDraggable(object, dragObject, enableTaptic, tapticOffset)
+	local dragging = false
+	local relative = nil
+
+	local offset = Vector2.zero
+	local screenGui = object:FindFirstAncestorWhichIsA("ScreenGui")
+	if screenGui and screenGui.IgnoreGuiInset then
+		offset += getService('GuiService'):GetGuiInset()
+	end
+
+	local function connectFunctions()
+		if dragBar and enableTaptic then
+			dragBar.MouseEnter:Connect(function()
+				if not dragging and not Hidden then
+					TweenService:Create(dragBarCosmetic, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {BackgroundTransparency = 0.5, Size = UDim2.new(0, 120, 0, 4)}):Play()
+				end
+			end)
+
+			dragBar.MouseLeave:Connect(function()
+				if not dragging and not Hidden then
+					TweenService:Create(dragBarCosmetic, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {BackgroundTransparency = 0.7, Size = UDim2.new(0, 100, 0, 4)}):Play()
+				end
+			end)
+		end
+	end
+
+	connectFunctions()
+
+	dragObject.InputBegan:Connect(function(input, processed)
+		if processed then return end
+
+		local inputType = input.UserInputType.Name
+		if inputType == "MouseButton1" or inputType == "Touch" then
+			dragging = true
+
+			relative = object.AbsolutePosition + object.AbsoluteSize * object.AnchorPoint - UserInputService:GetMouseLocation()
+			if enableTaptic and not Hidden then
+				TweenService:Create(dragBarCosmetic, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = UDim2.new(0, 110, 0, 4), BackgroundTransparency = 0}):Play()
+			end
+		end
+	end)
+
+	local inputEnded = UserInputService.InputEnded:Connect(function(input)
+		if not dragging then return end
+
+		local inputType = input.UserInputType.Name
+		if inputType == "MouseButton1" or inputType == "Touch" then
+			dragging = false
+
+			connectFunctions()
+
+			if enableTaptic and not Hidden then
+				TweenService:Create(dragBarCosmetic, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = UDim2.new(0, 100, 0, 4), BackgroundTransparency = 0.7}):Play()
+			end
+		end
+	end)
+
+	local renderStepped = RunService.RenderStepped:Connect(function()
+		if dragging and not Hidden then
+			local position = UserInputService:GetMouseLocation() + relative + offset
+			if enableTaptic and tapticOffset then
+				TweenService:Create(object, TweenInfo.new(0.4, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {Position = UDim2.fromOffset(position.X, position.Y)}):Play()
+				TweenService:Create(dragObject.Parent, TweenInfo.new(0.05, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {Position = UDim2.fromOffset(position.X, position.Y + ((useMobileSizing and tapticOffset[2]) or tapticOffset[1]))}):Play()
+			else
+				if dragBar and tapticOffset then
+					dragBar.Position = UDim2.fromOffset(position.X, position.Y + ((useMobileSizing and tapticOffset[2]) or tapticOffset[1]))
+				end
+				object.Position = UDim2.fromOffset(position.X, position.Y)
+			end
+		end
+	end)
+
+	object.Destroying:Connect(function()
+		if inputEnded then inputEnded:Disconnect() end
+		if renderStepped then renderStepped:Disconnect() end
+	end)
+end
+
+
+local function PackColor(Color)
+	return {R = Color.R * 255, G = Color.G * 255, B = Color.B * 255}
+end    
+
+local function UnpackColor(Color)
+	return Color3.fromRGB(Color.R, Color.G, Color.B)
+end
+
+local function LoadConfiguration(Configuration)
+	local success, Data = pcall(function() return HttpService:JSONDecode(Configuration) end)
+	local changed
+
+	if not success then warn('Rayfield had an issue decoding the configuration file, please try delete the file and reopen Rayfield.') return end
+
+	-- Iterate through current UI elements' flags
+	for FlagName, Flag in pairs(RayfieldLibrary.Flags) do
+		local FlagValue = Data[FlagName]
+
+		if (typeof(FlagValue) == 'boolean' and FlagValue == false) or FlagValue then
+			task.spawn(function()
+				if Flag.Type == "ColorPicker" then
+					changed = true
+					Flag:Set(UnpackColor(FlagValue))
+				else
+					if (Flag.CurrentValue or Flag.CurrentKeybind or Flag.CurrentOption or Flag.Color) ~= FlagValue then 
+						changed = true
+						Flag:Set(FlagValue) 	
+					end
+				end
+			end)
+		else
+			warn("Rayfield | Unable to find '"..FlagName.. "' in the save file.")
+			print("The error above may not be an issue if new elements have been added or not been set values.")
+			--RayfieldLibrary:Notify({Title = "Rayfield Flags", Content = "Rayfield was unable to find '"..FlagName.. "' in the save file. Check sirius.menu/discord for help.", Image = 3944688398})
+		end
+	end
+
+	return changed
+end
+
+local function SaveConfiguration()
+	if not CEnabled or not globalLoaded then return end
+
+	if debugX then
+		print('Saving')
+	end
+
+	local Data = {}
+	for i, v in pairs(RayfieldLibrary.Flags) do
+		if v.Type == "ColorPicker" then
+			Data[i] = PackColor(v.Color)
+		else
+			if typeof(v.CurrentValue) == 'boolean' then
+				if v.CurrentValue == false then
+					Data[i] = false
+				else
+					Data[i] = v.CurrentValue or v.CurrentKeybind or v.CurrentOption or v.Color
+				end
+			else
+				Data[i] = v.CurrentValue or v.CurrentKeybind or v.CurrentOption or v.Color
+			end
+		end
+	end
+
+	if useStudio then
+		if script.Parent:FindFirstChild('configuration') then script.Parent.configuration:Destroy() end
+
+		local ScreenGui = Instance.new("ScreenGui")
+		ScreenGui.Parent = script.Parent
+		ScreenGui.Name = 'configuration'
+
+		local TextBox = Instance.new("TextBox")
+		TextBox.Parent = ScreenGui
+		TextBox.Size = UDim2.new(0, 800, 0, 50)
+		TextBox.AnchorPoint = Vector2.new(0.5, 0)
+		TextBox.Position = UDim2.new(0.5, 0, 0, 30)
+		TextBox.Text = HttpService:JSONEncode(Data)
+		TextBox.ClearTextOnFocus = false
+	end
+
+	if debugX then
+		warn(HttpService:JSONEncode(Data))
+	end
+
+	if writefile then
+		writefile(ConfigurationFolder .. "/" .. CFileName .. ConfigurationExtension, tostring(HttpService:JSONEncode(Data)))
+	end
+end
+
+function RayfieldLibrary:Notify(data) -- action e.g open messages
+	task.spawn(function()
+
+		-- Notification Object Creation
+		local newNotification = Notifications.Template:Clone()
+		newNotification.Name = data.Title or 'No Title Provided'
+		newNotification.Parent = Notifications
+		newNotification.LayoutOrder = #Notifications:GetChildren()
+		newNotification.Visible = false
+
+		-- Set Data
+		newNotification.Title.Text = data.Title or "Unknown Title"
+		newNotification.Description.Text = data.Content or "Unknown Content"
+
+		if data.Image then
+			if typeof(data.Image) == 'string' and Icons then
+				local asset = getIcon(data.Image)
+
+				newNotification.Icon.Image = 'rbxassetid://'..asset.id
+				newNotification.Icon.ImageRectOffset = asset.imageRectOffset
+				newNotification.Icon.ImageRectSize = asset.imageRectSize
+			else
+				newNotification.Icon.Image = getAssetUri(data.Image)
+			end
+		else
+			newNotification.Icon.Image = "rbxassetid://" .. 0
+		end
+
+		-- Set initial transparency values
+
+		newNotification.Title.TextColor3 = SelectedTheme.TextColor
+		newNotification.Description.TextColor3 = SelectedTheme.TextColor
+		newNotification.BackgroundColor3 = SelectedTheme.Background
+		newNotification.UIStroke.Color = SelectedTheme.TextColor
+		newNotification.Icon.ImageColor3 = SelectedTheme.TextColor
+
+		newNotification.BackgroundTransparency = 1
+		newNotification.Title.TextTransparency = 1
+		newNotification.Description.TextTransparency = 1
+		newNotification.UIStroke.Transparency = 1
+		newNotification.Shadow.ImageTransparency = 1
+		newNotification.Size = UDim2.new(1, 0, 0, 800)
+		newNotification.Icon.ImageTransparency = 1
+		newNotification.Icon.BackgroundTransparency = 1
+
+		task.wait()
+
+		newNotification.Visible = true
+
+		if data.Actions then
+			warn('Rayfield | Not seeing your actions in notifications?')
+			print("Notification Actions are being sunset for now, keep up to date on when they're back in the discord. (sirius.menu/discord)")
+		end
+
+		-- Calculate textbounds and set initial values
+		local bounds = {newNotification.Title.TextBounds.Y, newNotification.Description.TextBounds.Y}
+		newNotification.Size = UDim2.new(1, -60, 0, -Notifications:FindFirstChild("UIListLayout").Padding.Offset)
+
+		newNotification.Icon.Size = UDim2.new(0, 32, 0, 32)
+		newNotification.Icon.Position = UDim2.new(0, 20, 0.5, 0)
+
+		TweenService:Create(newNotification, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Size = UDim2.new(1, 0, 0, math.max(bounds[1] + bounds[2] + 31, 60))}):Play()
+
+		task.wait(0.15)
+		TweenService:Create(newNotification, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0.45}):Play()
+		TweenService:Create(newNotification.Title, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()
+
+		task.wait(0.05)
+
+		TweenService:Create(newNotification.Icon, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {ImageTransparency = 0}):Play()
+
+		task.wait(0.05)
+		TweenService:Create(newNotification.Description, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 0.35}):Play()
+		TweenService:Create(newNotification.UIStroke, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {Transparency = 0.95}):Play()
+		TweenService:Create(newNotification.Shadow, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {ImageTransparency = 0.82}):Play()
+
+		local waitDuration = math.min(math.max((#newNotification.Description.Text * 0.1) + 2.5, 3), 10)
+		task.wait(data.Duration or waitDuration)
+
+		newNotification.Icon.Visible = false
+		TweenService:Create(newNotification, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {BackgroundTransparency = 1}):Play()
+		TweenService:Create(newNotification.UIStroke, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+		TweenService:Create(newNotification.Shadow, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {ImageTransparency = 1}):Play()
+		TweenService:Create(newNotification.Title, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+		TweenService:Create(newNotification.Description, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+
+		TweenService:Create(newNotification, TweenInfo.new(1, Enum.EasingStyle.Exponential), {Size = UDim2.new(1, -90, 0, 0)}):Play()
+
+		task.wait(1)
+
+		TweenService:Create(newNotification, TweenInfo.new(1, Enum.EasingStyle.Exponential), {Size = UDim2.new(1, -90, 0, -Notifications:FindFirstChild("UIListLayout").Padding.Offset)}):Play()
+
+		newNotification.Visible = false
+		newNotification:Destroy()
+	end)
+end
+
+local function openSearch()
+	searchOpen = true
+
+	Main.Search.BackgroundTransparency = 1
+	Main.Search.Shadow.ImageTransparency = 1
+	Main.Search.Input.TextTransparency = 1
+	Main.Search.Search.ImageTransparency = 1
+	Main.Search.UIStroke.Transparency = 1
+	Main.Search.Size = UDim2.new(1, 0, 0, 80)
+	Main.Search.Position = UDim2.new(0.5, 0, 0, 70)
+
+	Main.Search.Input.Interactable = true
+
+	Main.Search.Visible = true
+
+	for _, tabbtn in ipairs(TabList:GetChildren()) do
+		if tabbtn.ClassName == "Frame" and tabbtn.Name ~= "Placeholder" then
+			tabbtn.Interact.Visible = false
+			TweenService:Create(tabbtn, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {BackgroundTransparency = 1}):Play()
+			TweenService:Create(tabbtn.Title, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+			TweenService:Create(tabbtn.Image, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {ImageTransparency = 1}):Play()
+			TweenService:Create(tabbtn.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+		end
+	end
+
+	Main.Search.Input:CaptureFocus()
+	TweenService:Create(Main.Search.Shadow, TweenInfo.new(0.05, Enum.EasingStyle.Quint), {ImageTransparency = 0.95}):Play()
+	TweenService:Create(Main.Search, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {Position = UDim2.new(0.5, 0, 0, 57), BackgroundTransparency = 0.9}):Play()
+	TweenService:Create(Main.Search.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {Transparency = 0.8}):Play()
+	TweenService:Create(Main.Search.Input, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 0.2}):Play()
+	TweenService:Create(Main.Search.Search, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {ImageTransparency = 0.5}):Play()
+	TweenService:Create(Main.Search, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {Size = UDim2.new(1, -35, 0, 35)}):Play()
+end
+
+local function closeSearch()
+	searchOpen = false
+
+	TweenService:Create(Main.Search, TweenInfo.new(0.35, Enum.EasingStyle.Quint), {BackgroundTransparency = 1, Size = UDim2.new(1, -55, 0, 30)}):Play()
+	TweenService:Create(Main.Search.Search, TweenInfo.new(0.15, Enum.EasingStyle.Quint), {ImageTransparency = 1}):Play()
+	TweenService:Create(Main.Search.Shadow, TweenInfo.new(0.15, Enum.EasingStyle.Quint), {ImageTransparency = 1}):Play()
+	TweenService:Create(Main.Search.UIStroke, TweenInfo.new(0.15, Enum.EasingStyle.Quint), {Transparency = 1}):Play()
+	TweenService:Create(Main.Search.Input, TweenInfo.new(0.15, Enum.EasingStyle.Quint), {TextTransparency = 1}):Play()
+
+	for _, tabbtn in ipairs(TabList:GetChildren()) do
+		if tabbtn.ClassName == "Frame" and tabbtn.Name ~= "Placeholder" then
+			tabbtn.Interact.Visible = true
+			if tostring(Elements.UIPageLayout.CurrentPage) == tabbtn.Title.Text then
+				TweenService:Create(tabbtn, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+				TweenService:Create(tabbtn.Image, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {ImageTransparency = 0}):Play()
+				TweenService:Create(tabbtn.Title, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()
+				TweenService:Create(tabbtn.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+			else
+				TweenService:Create(tabbtn, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0.7}):Play()
+				TweenService:Create(tabbtn.Image, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {ImageTransparency = 0.2}):Play()
+				TweenService:Create(tabbtn.Title, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 0.2}):Play()
+				TweenService:Create(tabbtn.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {Transparency = 0.5}):Play()
+			end
+		end
+	end
+
+	Main.Search.Input.Text = ''
+	Main.Search.Input.Interactable = false
+end
+
+local function Hide(notify: boolean?)
+	if MPrompt then
+		MPrompt.Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+		MPrompt.Position = UDim2.new(0.5, 0, 0, -50)
+		MPrompt.Size = UDim2.new(0, 40, 0, 10)
+		MPrompt.BackgroundTransparency = 1
+		MPrompt.Title.TextTransparency = 1
+		MPrompt.Visible = true
+	end
+
+	task.spawn(closeSearch)
+
+	Debounce = true
+	if notify then
+		if useMobilePrompt then 
+			RayfieldLibrary:Notify({Title = "Interface Hidden", Content = "The interface has been hidden, you can unhide the interface by tapping 'Show'.", Duration = 7, Image = 4400697855})
+		else
+			RayfieldLibrary:Notify({Title = "Interface Hidden", Content = `The interface has been hidden, you can unhide the interface by tapping {getSetting("General", "rayfieldOpen")}.`, Duration = 7, Image = 4400697855})
+		end
+	end
+
+	TweenService:Create(Main, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {Size = UDim2.new(0, 470, 0, 0)}):Play()
+	TweenService:Create(Main.Topbar, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {Size = UDim2.new(0, 470, 0, 45)}):Play()
+	TweenService:Create(Main, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {BackgroundTransparency = 1}):Play()
+	TweenService:Create(Main.Topbar, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {BackgroundTransparency = 1}):Play()
+	TweenService:Create(Main.Topbar.Divider, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {BackgroundTransparency = 1}):Play()
+	TweenService:Create(Main.Topbar.CornerRepair, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {BackgroundTransparency = 1}):Play()
+	TweenService:Create(Main.Topbar.Title, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+	TweenService:Create(Main.Shadow.Image, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {ImageTransparency = 1}):Play()
+	TweenService:Create(Topbar.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+	TweenService:Create(dragBarCosmetic, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {BackgroundTransparency = 1}):Play()
+
+	if useMobilePrompt and MPrompt then
+		TweenService:Create(MPrompt, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {Size = UDim2.new(0, 120, 0, 30), Position = UDim2.new(0.5, 0, 0, 20), BackgroundTransparency = 0.3}):Play()
+		TweenService:Create(MPrompt.Title, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 0.3}):Play()
+	end
+
+	for _, TopbarButton in ipairs(Topbar:GetChildren()) do
+		if TopbarButton.ClassName == "ImageButton" then
+			TweenService:Create(TopbarButton, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {ImageTransparency = 1}):Play()
+		end
+	end
+
+	for _, tabbtn in ipairs(TabList:GetChildren()) do
+		if tabbtn.ClassName == "Frame" and tabbtn.Name ~= "Placeholder" then
+			TweenService:Create(tabbtn, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {BackgroundTransparency = 1}):Play()
+			TweenService:Create(tabbtn.Title, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+			TweenService:Create(tabbtn.Image, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {ImageTransparency = 1}):Play()
+			TweenService:Create(tabbtn.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+		end
+	end
+
+	dragInteract.Visible = false
+
+	for _, tab in ipairs(Elements:GetChildren()) do
+		if tab.Name ~= "Template" and tab.ClassName == "ScrollingFrame" and tab.Name ~= "Placeholder" then
+			for _, element in ipairs(tab:GetChildren()) do
+				if element.ClassName == "Frame" then
+					if element.Name ~= "SectionSpacing" and element.Name ~= "Placeholder" then
+						if element.Name == "SectionTitle" or element.Name == 'SearchTitle-fsefsefesfsefesfesfThanks' then
+							TweenService:Create(element.Title, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+						elseif element.Name == 'Divider' then
+							TweenService:Create(element.Divider, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {BackgroundTransparency = 1}):Play()
+						else
+							TweenService:Create(element, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {BackgroundTransparency = 1}):Play()
+							TweenService:Create(element.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+							TweenService:Create(element.Title, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+						end
+						for _, child in ipairs(element:GetChildren()) do
+							if child.ClassName == "Frame" or child.ClassName == "TextLabel" or child.ClassName == "TextBox" or child.ClassName == "ImageButton" or child.ClassName == "ImageLabel" then
+								child.Visible = false
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	task.wait(0.5)
+	Main.Visible = false
+	Debounce = false
+end
+
+local function Maximise()
+	Debounce = true
+	Topbar.ChangeSize.Image = "rbxassetid://"..10137941941
+
+	TweenService:Create(Topbar.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+	TweenService:Create(Main.Shadow.Image, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {ImageTransparency = 0.6}):Play()
+	TweenService:Create(Topbar.CornerRepair, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+	TweenService:Create(Topbar.Divider, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+	TweenService:Create(dragBarCosmetic, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {BackgroundTransparency = 0.7}):Play()
+	TweenService:Create(Main, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {Size = useMobileSizing and UDim2.new(0, 500, 0, 275) or UDim2.new(0, 500, 0, 475)}):Play()
+	TweenService:Create(Topbar, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {Size = UDim2.new(0, 500, 0, 45)}):Play()
+	TabList.Visible = true
+	task.wait(0.2)
+
+	Elements.Visible = true
+
+	for _, tab in ipairs(Elements:GetChildren()) do
+		if tab.Name ~= "Template" and tab.ClassName == "ScrollingFrame" and tab.Name ~= "Placeholder" then
+			for _, element in ipairs(tab:GetChildren()) do
+				if element.ClassName == "Frame" then
+					if element.Name ~= "SectionSpacing" and element.Name ~= "Placeholder" then
+						if element.Name == "SectionTitle" or element.Name == 'SearchTitle-fsefsefesfsefesfesfThanks' then
+							TweenService:Create(element.Title, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 0.4}):Play()
+						elseif element.Name == 'Divider' then
+							TweenService:Create(element.Divider, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0.85}):Play()
+						else
+							TweenService:Create(element, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+							TweenService:Create(element.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()
+							TweenService:Create(element.Title, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()
+						end
+						for _, child in ipairs(element:GetChildren()) do
+							if child.ClassName == "Frame" or child.ClassName == "TextLabel" or child.ClassName == "TextBox" or child.ClassName == "ImageButton" or child.ClassName == "ImageLabel" then
+								child.Visible = true
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	task.wait(0.1)
+
+	for _, tabbtn in ipairs(TabList:GetChildren()) do
+		if tabbtn.ClassName == "Frame" and tabbtn.Name ~= "Placeholder" then
+			if tostring(Elements.UIPageLayout.CurrentPage) == tabbtn.Title.Text then
+				TweenService:Create(tabbtn, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+				TweenService:Create(tabbtn.Image, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {ImageTransparency = 0}):Play()
+				TweenService:Create(tabbtn.Title, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()
+				TweenService:Create(tabbtn.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+			else
+				TweenService:Create(tabbtn, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0.7}):Play()
+				TweenService:Create(tabbtn.Image, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {ImageTransparency = 0.2}):Play()
+				TweenService:Create(tabbtn.Title, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 0.2}):Play()
+				TweenService:Create(tabbtn.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {Transparency = 0.5}):Play()
+			end
+
+		end
+	end
+
+	task.wait(0.5)
+	Debounce = false
+end
+
+
+local function Unhide()
+	Debounce = true
+	Main.Position = UDim2.new(0.5, 0, 0.5, 0)
+	Main.Visible = true
+	TweenService:Create(Main, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {Size = useMobileSizing and UDim2.new(0, 500, 0, 275) or UDim2.new(0, 500, 0, 475)}):Play()
+	TweenService:Create(Main.Topbar, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {Size = UDim2.new(0, 500, 0, 45)}):Play()
+	TweenService:Create(Main.Shadow.Image, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {ImageTransparency = 0.6}):Play()
+	TweenService:Create(Main, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+	TweenService:Create(Main.Topbar, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+	TweenService:Create(Main.Topbar.Divider, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+	TweenService:Create(Main.Topbar.CornerRepair, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+	TweenService:Create(Main.Topbar.Title, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()
+
+	if MPrompt then
+		TweenService:Create(MPrompt, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {Size = UDim2.new(0, 40, 0, 10), Position = UDim2.new(0.5, 0, 0, -50), BackgroundTransparency = 1}):Play()
+		TweenService:Create(MPrompt.Title, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+
+		task.spawn(function()
+			task.wait(0.5)
+			MPrompt.Visible = false
+		end)
+	end
+
+	if Minimised then
+		task.spawn(Maximise)
+	end
+
+	dragBar.Position = useMobileSizing and UDim2.new(0.5, 0, 0.5, dragOffsetMobile) or UDim2.new(0.5, 0, 0.5, dragOffset)
+
+	dragInteract.Visible = true
+
+	for _, TopbarButton in ipairs(Topbar:GetChildren()) do
+		if TopbarButton.ClassName == "ImageButton" then
+			if TopbarButton.Name == 'Icon' then
+				TweenService:Create(TopbarButton, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {ImageTransparency = 0}):Play()
+			else
+				TweenService:Create(TopbarButton, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {ImageTransparency = 0.8}):Play()
+			end
+
+		end
+	end
+
+	for _, tabbtn in ipairs(TabList:GetChildren()) do
+		if tabbtn.ClassName == "Frame" and tabbtn.Name ~= "Placeholder" then
+			if tostring(Elements.UIPageLayout.CurrentPage) == tabbtn.Title.Text then
+				TweenService:Create(tabbtn, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+				TweenService:Create(tabbtn.Title, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()
+				TweenService:Create(tabbtn.Image, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {ImageTransparency = 0}):Play()
+				TweenService:Create(tabbtn.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+			else
+				TweenService:Create(tabbtn, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0.7}):Play()
+				TweenService:Create(tabbtn.Image, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {ImageTransparency = 0.2}):Play()
+				TweenService:Create(tabbtn.Title, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 0.2}):Play()
+				TweenService:Create(tabbtn.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {Transparency = 0.5}):Play()
+			end
+		end
+	end
+
+	for _, tab in ipairs(Elements:GetChildren()) do
+		if tab.Name ~= "Template" and tab.ClassName == "ScrollingFrame" and tab.Name ~= "Placeholder" then
+			for _, element in ipairs(tab:GetChildren()) do
+				if element.ClassName == "Frame" then
+					if element.Name ~= "SectionSpacing" and element.Name ~= "Placeholder" then
+						if element.Name == "SectionTitle" or element.Name == 'SearchTitle-fsefsefesfsefesfesfThanks' then
+							TweenService:Create(element.Title, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 0.4}):Play()
+						elseif element.Name == 'Divider' then
+							TweenService:Create(element.Divider, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0.85}):Play()
+						else
+							TweenService:Create(element, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+							TweenService:Create(element.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()
+							TweenService:Create(element.Title, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()
+						end
+						for _, child in ipairs(element:GetChildren()) do
+							if child.ClassName == "Frame" or child.ClassName == "TextLabel" or child.ClassName == "TextBox" or child.ClassName == "ImageButton" or child.ClassName == "ImageLabel" then
+								child.Visible = true
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	TweenService:Create(dragBarCosmetic, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {BackgroundTransparency = 0.5}):Play()
+
+	task.wait(0.5)
+	Minimised = false
+	Debounce = false
+end
+
+local function Minimise()
+	Debounce = true
+	Topbar.ChangeSize.Image = "rbxassetid://"..11036884234
+
+	Topbar.UIStroke.Color = SelectedTheme.ElementStroke
+
+	task.spawn(closeSearch)
+
+	for _, tabbtn in ipairs(TabList:GetChildren()) do
+		if tabbtn.ClassName == "Frame" and tabbtn.Name ~= "Placeholder" then
+			TweenService:Create(tabbtn, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {BackgroundTransparency = 1}):Play()
+			TweenService:Create(tabbtn.Image, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {ImageTransparency = 1}):Play()
+			TweenService:Create(tabbtn.Title, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+			TweenService:Create(tabbtn.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+		end
+	end
+
+	for _, tab in ipairs(Elements:GetChildren()) do
+		if tab.Name ~= "Template" and tab.ClassName == "ScrollingFrame" and tab.Name ~= "Placeholder" then
+			for _, element in ipairs(tab:GetChildren()) do
+				if element.ClassName == "Frame" then
+					if element.Name ~= "SectionSpacing" and element.Name ~= "Placeholder" then
+						if element.Name == "SectionTitle" or element.Name == 'SearchTitle-fsefsefesfsefesfesfThanks' then
+							TweenService:Create(element.Title, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+						elseif element.Name == 'Divider' then
+							TweenService:Create(element.Divider, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {BackgroundTransparency = 1}):Play()
+						else
+							TweenService:Create(element, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {BackgroundTransparency = 1}):Play()
+							TweenService:Create(element.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+							TweenService:Create(element.Title, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+						end
+						for _, child in ipairs(element:GetChildren()) do
+							if child.ClassName == "Frame" or child.ClassName == "TextLabel" or child.ClassName == "TextBox" or child.ClassName == "ImageButton" or child.ClassName == "ImageLabel" then
+								child.Visible = false
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	TweenService:Create(dragBarCosmetic, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {BackgroundTransparency = 1}):Play()
+	TweenService:Create(Topbar.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()
+	TweenService:Create(Main.Shadow.Image, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {ImageTransparency = 1}):Play()
+	TweenService:Create(Topbar.CornerRepair, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {BackgroundTransparency = 1}):Play()
+	TweenService:Create(Topbar.Divider, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {BackgroundTransparency = 1}):Play()
+	TweenService:Create(Main, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {Size = UDim2.new(0, 495, 0, 45)}):Play()
+	TweenService:Create(Topbar, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {Size = UDim2.new(0, 495, 0, 45)}):Play()
+
+	task.wait(0.3)
+
+	Elements.Visible = false
+	TabList.Visible = false
+
+	task.wait(0.2)
+	Debounce = false
+end
+
+local function saveSettings() -- Save settings to config file
+	local encoded
+	local success, err = pcall(function()
+		encoded = HttpService:JSONEncode(settingsTable)
+	end)
+
+	if success then
+		if useStudio then
+			if script.Parent['get.val'] then
+				script.Parent['get.val'].Value = encoded
+			end
+		end
+		if writefile then
+			writefile(RayfieldFolder..'/settings'..ConfigurationExtension, encoded)
+		end
+	end
+end
+
+local function updateSetting(category: string, setting: string, value: any)
+	if not settingsInitialized then
+		return
+	end
+	settingsTable[category][setting].Value = value
+	overriddenSettings[`{category}.{setting}`] = nil -- If user changes an overriden setting, remove the override
+	saveSettings()
+end
+
+local function createSettings(window)
+	if not (writefile and isfile and readfile and isfolder and makefolder) and not useStudio then
+		if Topbar['Settings'] then Topbar.Settings.Visible = false end
+		Topbar['Search'].Position = UDim2.new(1, -75, 0.5, 0)
+		warn('Can\'t create settings as no file-saving functionality is available.')
+		return
+	end
+
+	local newTab = window:CreateTab('Rayfield Settings', 0, true)
+
+	if TabList['Rayfield Settings'] then
+		TabList['Rayfield Settings'].LayoutOrder = 1000
+	end
+
+	if Elements['Rayfield Settings'] then
+		Elements['Rayfield Settings'].LayoutOrder = 1000
+	end
+
+	-- Create sections and elements
+	for categoryName, settingCategory in pairs(settingsTable) do
+		newTab:CreateSection(categoryName)
+
+		for settingName, setting in pairs(settingCategory) do
+			if setting.Type == 'input' then
+				setting.Element = newTab:CreateInput({
+					Name = setting.Name,
+					CurrentValue = setting.Value,
+					PlaceholderText = setting.Placeholder,
+					Ext = true,
+					RemoveTextAfterFocusLost = setting.ClearOnFocus,
+					Callback = function(Value)
+						updateSetting(categoryName, settingName, Value)
+					end,
+				})
+			elseif setting.Type == 'toggle' then
+				setting.Element = newTab:CreateToggle({
+					Name = setting.Name,
+					CurrentValue = setting.Value,
+					Ext = true,
+					Callback = function(Value)
+						updateSetting(categoryName, settingName, Value)
+					end,
+				})
+			elseif setting.Type == 'bind' then
+				setting.Element = newTab:CreateKeybind({
+					Name = setting.Name,
+					CurrentKeybind = setting.Value,
+					HoldToInteract = false,
+					Ext = true,
+					CallOnChange = true,
+					Callback = function(Value)
+						updateSetting(categoryName, settingName, Value)
+					end,
+				})
+			end
+		end
+	end
+
+	settingsCreated = true
+	loadSettings()
+	saveSettings()
+end
+
+
+
+function RayfieldLibrary:CreateWindow(Settings)
+	print('creating window')
+	if Rayfield:FindFirstChild('Loading') then
+		if getgenv and not getgenv().rayfieldCached then
+			Rayfield.Enabled = true
+			Rayfield.Loading.Visible = true
+
+			task.wait(1.4)
+			Rayfield.Loading.Visible = false
+		end
+	end
+
+	if getgenv then getgenv().rayfieldCached = true end
+
+	if not correctBuild and not Settings.DisableBuildWarnings then
+		task.delay(3, 
+			function() 
+				RayfieldLibrary:Notify({Title = 'Build Mismatch', Content = 'Rayfield may encounter issues as you are running an incompatible interface version ('.. ((Rayfield:FindFirstChild('Build') and Rayfield.Build.Value) or 'No Build') ..').\n\nThis version of Rayfield is intended for interface build '..InterfaceBuild..'.\n\nTry rejoining and then run the script twice.', Image = 4335487866, Duration = 15})		
+			end)
+	end
+
+	if Settings.ToggleUIKeybind then -- Can either be a string or an Enum.KeyCode
+		local keybind = Settings.ToggleUIKeybind
+		if type(keybind) == "string" then
+			keybind = string.upper(keybind)
+			assert(pcall(function()
+				return Enum.KeyCode[keybind]
+			end), "ToggleUIKeybind must be a valid KeyCode")
+			overrideSetting("General", "rayfieldOpen", keybind)
+		elseif typeof(keybind) == "EnumItem" then
+			assert(keybind.EnumType == Enum.KeyCode, "ToggleUIKeybind must be a KeyCode enum")
+			overrideSetting("General", "rayfieldOpen", keybind.Name)
+		else
+			error("ToggleUIKeybind must be a string or KeyCode enum")
+		end
+	end
+
+	if isfolder and not isfolder(RayfieldFolder) then
+		makefolder(RayfieldFolder)
+	end
+
+	-- Attempt to report an event to analytics
+	if not requestsDisabled then
+		sendReport("window_created", Settings.Name or "Unknown")
+	end
+	local Passthrough = false
+	Topbar.Title.Text = Settings.Name
+
+	Main.Size = UDim2.new(0, 420, 0, 100)
+	Main.Visible = true
+	Main.BackgroundTransparency = 1
+	if Main:FindFirstChild('Notice') then Main.Notice.Visible = false end
+	Main.Shadow.Image.ImageTransparency = 1
+
+	LoadingFrame.Title.TextTransparency = 1
+	LoadingFrame.Subtitle.TextTransparency = 1
+
+	if Settings.ShowText then
+		MPrompt.Title.Text = 'Show '..Settings.ShowText
+	end
+
+	LoadingFrame.Version.TextTransparency = 1
+	LoadingFrame.Title.Text = Settings.LoadingTitle or "Rayfield"
+	LoadingFrame.Subtitle.Text = Settings.LoadingSubtitle or "Interface Suite"
+
+	if Settings.LoadingTitle ~= "Rayfield Interface Suite" then
+		LoadingFrame.Version.Text = "Rayfield UI"
+	end
+
+	if Settings.Icon and Settings.Icon ~= 0 and Topbar:FindFirstChild('Icon') then
+		Topbar.Icon.Visible = true
+		Topbar.Title.Position = UDim2.new(0, 47, 0.5, 0)
+
+		if Settings.Icon then
+			if typeof(Settings.Icon) == 'string' and Icons then
+				local asset = getIcon(Settings.Icon)
+
+				Topbar.Icon.Image = 'rbxassetid://'..asset.id
+				Topbar.Icon.ImageRectOffset = asset.imageRectOffset
+				Topbar.Icon.ImageRectSize = asset.imageRectSize
+			else
+				Topbar.Icon.Image = getAssetUri(Settings.Icon)
+			end
+		else
+			Topbar.Icon.Image = "rbxassetid://" .. 0
+		end
+	end
+
+	if dragBar then
+		dragBar.Visible = false
+		dragBarCosmetic.BackgroundTransparency = 1
+		dragBar.Visible = true
+	end
+
+	if Settings.Theme then
+		local success, result = pcall(ChangeTheme, Settings.Theme)
+		if not success then
+			local success, result2 = pcall(ChangeTheme, 'Default')
+			if not success then
+				warn('CRITICAL ERROR - NO DEFAULT THEME')
+				print(result2)
+			end
+			warn('issue rendering theme. no theme on file')
+			print(result)
+		end
+	end
+
+	Topbar.Visible = false
+	Elements.Visible = false
+	LoadingFrame.Visible = true
+
+	if not Settings.DisableRayfieldPrompts then
+		task.spawn(function()
+			while true do
+				task.wait(math.random(180, 600))
+				RayfieldLibrary:Notify({
+					Title = "Rayfield Interface",
+					Content = "Enjoying this UI library? Find it at sirius.menu/discord",
+					Duration = 7,
+					Image = 4370033185,
+				})
+			end
+		end)
+	end
+
+	pcall(function()
+		if not Settings.ConfigurationSaving.FileName then
+			Settings.ConfigurationSaving.FileName = tostring(game.PlaceId)
+		end
+
+		if Settings.ConfigurationSaving.Enabled == nil then
+			Settings.ConfigurationSaving.Enabled = false
+		end
+
+		CFileName = Settings.ConfigurationSaving.FileName
+		ConfigurationFolder = Settings.ConfigurationSaving.FolderName or ConfigurationFolder
+		CEnabled = Settings.ConfigurationSaving.Enabled
+
+		if Settings.ConfigurationSaving.Enabled then
+			if not isfolder(ConfigurationFolder) then
+				makefolder(ConfigurationFolder)
+			end	
+		end
+	end)
+
+
+	makeDraggable(Main, Topbar, false, {dragOffset, dragOffsetMobile})
+	if dragBar then dragBar.Position = useMobileSizing and UDim2.new(0.5, 0, 0.5, dragOffsetMobile) or UDim2.new(0.5, 0, 0.5, dragOffset) makeDraggable(Main, dragInteract, true, {dragOffset, dragOffsetMobile}) end
+
+	for _, TabButton in ipairs(TabList:GetChildren()) do
+		if TabButton.ClassName == "Frame" and TabButton.Name ~= "Placeholder" then
+			TabButton.BackgroundTransparency = 1
+			TabButton.Title.TextTransparency = 1
+			TabButton.Image.ImageTransparency = 1
+			TabButton.UIStroke.Transparency = 1
+		end
+	end
+
+	if Settings.Discord and Settings.Discord.Enabled and not useStudio then
+		if isfolder and not isfolder(RayfieldFolder.."/Discord Invites") then
+			makefolder(RayfieldFolder.."/Discord Invites")
+		end
+
+		if isfile and not isfile(RayfieldFolder.."/Discord Invites".."/"..Settings.Discord.Invite..ConfigurationExtension) then
+			if requestFunc then
+				pcall(function()
+					requestFunc({
+						Url = 'http://127.0.0.1:6463/rpc?v=1',
+						Method = 'POST',
+						Headers = {
+							['Content-Type'] = 'application/json',
+							Origin = 'https://discord.com'
+						},
+						Body = HttpService:JSONEncode({
+							cmd = 'INVITE_BROWSER',
+							nonce = HttpService:GenerateGUID(false),
+							args = {code = Settings.Discord.Invite}
+						})
+					})
+				end)
+			end
+
+			if Settings.Discord.RememberJoins then -- We do logic this way so if the developer changes this setting, the user still won't be prompted, only new users
+				writefile(RayfieldFolder.."/Discord Invites".."/"..Settings.Discord.Invite..ConfigurationExtension,"Rayfield RememberJoins is true for this invite, this invite will not ask you to join again")
+			end
+		end
+	end
+
+	if (Settings.KeySystem) then
+		if not Settings.KeySettings then
+			Passthrough = true
+			return
+		end
+
+		if isfolder and not isfolder(RayfieldFolder.."/Key System") then
+			makefolder(RayfieldFolder.."/Key System")
+		end
+
+		if typeof(Settings.KeySettings.Key) == "string" then Settings.KeySettings.Key = {Settings.KeySettings.Key} end
+
+		if Settings.KeySettings.GrabKeyFromSite then
+			for i, Key in ipairs(Settings.KeySettings.Key) do
+				local Success, Response = pcall(function()
+					Settings.KeySettings.Key[i] = tostring(game:HttpGet(Key):gsub("[\n\r]", " "))
+					Settings.KeySettings.Key[i] = string.gsub(Settings.KeySettings.Key[i], " ", "")
+				end)
+				if not Success then
+					print("Rayfield | "..Key.." Error " ..tostring(Response))
+					warn('Check docs.sirius.menu for help with Rayfield specific development.')
+				end
+			end
+		end
+
+		if not Settings.KeySettings.FileName then
+			Settings.KeySettings.FileName = "No file name specified"
+		end
+
+		if isfile and isfile(RayfieldFolder.."/Key System".."/"..Settings.KeySettings.FileName..ConfigurationExtension) then
+			for _, MKey in ipairs(Settings.KeySettings.Key) do
+				if string.find(readfile(RayfieldFolder.."/Key System".."/"..Settings.KeySettings.FileName..ConfigurationExtension), MKey) then
+					Passthrough = true
+				end
+			end
+		end
+
+		if not Passthrough then
+			local AttemptsRemaining = math.random(2, 5)
+			Rayfield.Enabled = false
+			local KeyUI = useStudio and script.Parent:FindFirstChild('Key') or game:GetObjects("rbxassetid://11380036235")[1]
+
+			KeyUI.Enabled = true
+
+			if gethui then
+				KeyUI.Parent = gethui()
+			elseif syn and syn.protect_gui then 
+				syn.protect_gui(KeyUI)
+				KeyUI.Parent = CoreGui
+			elseif not useStudio and CoreGui:FindFirstChild("RobloxGui") then
+				KeyUI.Parent = CoreGui:FindFirstChild("RobloxGui")
+			elseif not useStudio then
+				KeyUI.Parent = CoreGui
+			end
+
+			if gethui then
+				for _, Interface in ipairs(gethui():GetChildren()) do
+					if Interface.Name == KeyUI.Name and Interface ~= KeyUI then
+						Interface.Enabled = false
+						Interface.Name = "KeyUI-Old"
+					end
+				end
+			elseif not useStudio then
+				for _, Interface in ipairs(CoreGui:GetChildren()) do
+					if Interface.Name == KeyUI.Name and Interface ~= KeyUI then
+						Interface.Enabled = false
+						Interface.Name = "KeyUI-Old"
+					end
+				end
+			end
+
+			local KeyMain = KeyUI.Main
+			KeyMain.Title.Text = Settings.KeySettings.Title or Settings.Name
+			KeyMain.Subtitle.Text = Settings.KeySettings.Subtitle or "Key System"
+			KeyMain.NoteMessage.Text = Settings.KeySettings.Note or "No instructions"
+
+			KeyMain.Size = UDim2.new(0, 467, 0, 175)
+			KeyMain.BackgroundTransparency = 1
+			KeyMain.Shadow.Image.ImageTransparency = 1
+			KeyMain.Title.TextTransparency = 1
+			KeyMain.Subtitle.TextTransparency = 1
+			KeyMain.KeyNote.TextTransparency = 1
+			KeyMain.Input.BackgroundTransparency = 1
+			KeyMain.Input.UIStroke.Transparency = 1
+			KeyMain.Input.InputBox.TextTransparency = 1
+			KeyMain.NoteTitle.TextTransparency = 1
+			KeyMain.NoteMessage.TextTransparency = 1
+			KeyMain.Hide.ImageTransparency = 1
+
+			TweenService:Create(KeyMain, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+			TweenService:Create(KeyMain, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Size = UDim2.new(0, 500, 0, 187)}):Play()
+			TweenService:Create(KeyMain.Shadow.Image, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {ImageTransparency = 0.5}):Play()
+			task.wait(0.05)
+			TweenService:Create(KeyMain.Title, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()
+			TweenService:Create(KeyMain.Subtitle, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()
+			task.wait(0.05)
+			TweenService:Create(KeyMain.KeyNote, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()
+			TweenService:Create(KeyMain.Input, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+			TweenService:Create(KeyMain.Input.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()
+			TweenService:Create(KeyMain.Input.InputBox, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()
+			task.wait(0.05)
+			TweenService:Create(KeyMain.NoteTitle, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()
+			TweenService:Create(KeyMain.NoteMessage, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()
+			task.wait(0.15)
+			TweenService:Create(KeyMain.Hide, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {ImageTransparency = 0.3}):Play()
+
+
+			KeyUI.Main.Input.InputBox.FocusLost:Connect(function()
+				if #KeyUI.Main.Input.InputBox.Text == 0 then return end
+				local KeyFound = false
+				local FoundKey = ''
+				for _, MKey in ipairs(Settings.KeySettings.Key) do
+					--if string.find(KeyMain.Input.InputBox.Text, MKey) then
+					--	KeyFound = true
+					--	FoundKey = MKey
+					--end
+
+
+					-- stricter key check
+					if KeyMain.Input.InputBox.Text == MKey then
+						KeyFound = true
+						FoundKey = MKey
+					end
+				end
+				if KeyFound then 
+					TweenService:Create(KeyMain, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundTransparency = 1}):Play()
+					TweenService:Create(KeyMain, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Size = UDim2.new(0, 467, 0, 175)}):Play()
+					TweenService:Create(KeyMain.Shadow.Image, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {ImageTransparency = 1}):Play()
+					TweenService:Create(KeyMain.Title, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+					TweenService:Create(KeyMain.Subtitle, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+					TweenService:Create(KeyMain.KeyNote, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+					TweenService:Create(KeyMain.Input, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {BackgroundTransparency = 1}):Play()
+					TweenService:Create(KeyMain.Input.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+					TweenService:Create(KeyMain.Input.InputBox, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+					TweenService:Create(KeyMain.NoteTitle, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+					TweenService:Create(KeyMain.NoteMessage, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+					TweenService:Create(KeyMain.Hide, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {ImageTransparency = 1}):Play()
+					task.wait(0.51)
+					Passthrough = true
+					KeyMain.Visible = false
+					if Settings.KeySettings.SaveKey then
+						if writefile then
+							writefile(RayfieldFolder.."/Key System".."/"..Settings.KeySettings.FileName..ConfigurationExtension, FoundKey)
+						end
+						RayfieldLibrary:Notify({Title = "Key System", Content = "The key for this script has been saved successfully.", Image = 3605522284})
+					end
+				else
+					if AttemptsRemaining == 0 then
+						TweenService:Create(KeyMain, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundTransparency = 1}):Play()
+						TweenService:Create(KeyMain, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Size = UDim2.new(0, 467, 0, 175)}):Play()
+						TweenService:Create(KeyMain.Shadow.Image, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {ImageTransparency = 1}):Play()
+						TweenService:Create(KeyMain.Title, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+						TweenService:Create(KeyMain.Subtitle, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+						TweenService:Create(KeyMain.KeyNote, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+						TweenService:Create(KeyMain.Input, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {BackgroundTransparency = 1}):Play()
+						TweenService:Create(KeyMain.Input.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+						TweenService:Create(KeyMain.Input.InputBox, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+						TweenService:Create(KeyMain.NoteTitle, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+						TweenService:Create(KeyMain.NoteMessage, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+						TweenService:Create(KeyMain.Hide, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {ImageTransparency = 1}):Play()
+						task.wait(0.45)
+						Players.LocalPlayer:Kick("No Attempts Remaining")
+						game:Shutdown()
+					end
+					KeyMain.Input.InputBox.Text = ""
+					AttemptsRemaining = AttemptsRemaining - 1
+					TweenService:Create(KeyMain, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Size = UDim2.new(0, 467, 0, 175)}):Play()
+					TweenService:Create(KeyMain, TweenInfo.new(0.4, Enum.EasingStyle.Elastic), {Position = UDim2.new(0.495,0,0.5,0)}):Play()
+					task.wait(0.1)
+					TweenService:Create(KeyMain, TweenInfo.new(0.4, Enum.EasingStyle.Elastic), {Position = UDim2.new(0.505,0,0.5,0)}):Play()
+					task.wait(0.1)
+					TweenService:Create(KeyMain, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {Position = UDim2.new(0.5,0,0.5,0)}):Play()
+					TweenService:Create(KeyMain, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Size = UDim2.new(0, 500, 0, 187)}):Play()
+				end
+			end)
+
+			KeyMain.Hide.MouseButton1Click:Connect(function()
+				TweenService:Create(KeyMain, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundTransparency = 1}):Play()
+				TweenService:Create(KeyMain, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Size = UDim2.new(0, 467, 0, 175)}):Play()
+				TweenService:Create(KeyMain.Shadow.Image, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {ImageTransparency = 1}):Play()
+				TweenService:Create(KeyMain.Title, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+				TweenService:Create(KeyMain.Subtitle, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+				TweenService:Create(KeyMain.KeyNote, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+				TweenService:Create(KeyMain.Input, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {BackgroundTransparency = 1}):Play()
+				TweenService:Create(KeyMain.Input.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+				TweenService:Create(KeyMain.Input.InputBox, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+				TweenService:Create(KeyMain.NoteTitle, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+				TweenService:Create(KeyMain.NoteMessage, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+				TweenService:Create(KeyMain.Hide, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {ImageTransparency = 1}):Play()
+				task.wait(0.51)
+				RayfieldLibrary:Destroy()
+				KeyUI:Destroy()
+			end)
+		else
+			Passthrough = true
+		end
+	end
+	if Settings.KeySystem then
+		repeat task.wait() until Passthrough
+	end
+
+	Notifications.Template.Visible = false
+	Notifications.Visible = true
+	Rayfield.Enabled = true
+
+	task.wait(0.5)
+	TweenService:Create(Main, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+	TweenService:Create(Main.Shadow.Image, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {ImageTransparency = 0.6}):Play()
+	task.wait(0.1)
+	TweenService:Create(LoadingFrame.Title, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()
+	task.wait(0.05)
+	TweenService:Create(LoadingFrame.Subtitle, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()
+	task.wait(0.05)
+	TweenService:Create(LoadingFrame.Version, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()
+
+
+	Elements.Template.LayoutOrder = 100000
+	Elements.Template.Visible = false
+
+	Elements.UIPageLayout.FillDirection = Enum.FillDirection.Horizontal
+	TabList.Template.Visible = false
+
+	-- Tab
+	local FirstTab = false
+	local Window = {}
+	function Window:CreateTab(Name, Image, Ext)
+		local SDone = false
+		local TabButton = TabList.Template:Clone()
+		TabButton.Name = Name
+		TabButton.Title.Text = Name
+		TabButton.Parent = TabList
+		TabButton.Title.TextWrapped = false
+		TabButton.Size = UDim2.new(0, TabButton.Title.TextBounds.X + 30, 0, 30)
+
+		if Image and Image ~= 0 then
+			if typeof(Image) == 'string' and Icons then
+				local asset = getIcon(Image)
+
+				TabButton.Image.Image = 'rbxassetid://'..asset.id
+				TabButton.Image.ImageRectOffset = asset.imageRectOffset
+				TabButton.Image.ImageRectSize = asset.imageRectSize
+			else
+				TabButton.Image.Image = getAssetUri(Image)
+			end
+
+			TabButton.Title.AnchorPoint = Vector2.new(0, 0.5)
+			TabButton.Title.Position = UDim2.new(0, 37, 0.5, 0)
+			TabButton.Image.Visible = true
+			TabButton.Title.TextXAlignment = Enum.TextXAlignment.Left
+			TabButton.Size = UDim2.new(0, TabButton.Title.TextBounds.X + 52, 0, 30)
+		end
+
+
+
+		TabButton.BackgroundTransparency = 1
+		TabButton.Title.TextTransparency = 1
+		TabButton.Image.ImageTransparency = 1
+		TabButton.UIStroke.Transparency = 1
+
+		TabButton.Visible = not Ext or false
+
+		-- Create Elements Page
+		local TabPage = Elements.Template:Clone()
+		TabPage.Name = Name
+		TabPage.Visible = true
+
+		TabPage.LayoutOrder = #Elements:GetChildren() or Ext and 10000
+
+		for _, TemplateElement in ipairs(TabPage:GetChildren()) do
+			if TemplateElement.ClassName == "Frame" and TemplateElement.Name ~= "Placeholder" then
+				TemplateElement:Destroy()
+			end
+		end
+
+		TabPage.Parent = Elements
+		if not FirstTab and not Ext then
+			Elements.UIPageLayout.Animated = false
+			Elements.UIPageLayout:JumpTo(TabPage)
+			Elements.UIPageLayout.Animated = true
+		end
+
+		TabButton.UIStroke.Color = SelectedTheme.TabStroke
+
+		if Elements.UIPageLayout.CurrentPage == TabPage then
+			TabButton.BackgroundColor3 = SelectedTheme.TabBackgroundSelected
+			TabButton.Image.ImageColor3 = SelectedTheme.SelectedTabTextColor
+			TabButton.Title.TextColor3 = SelectedTheme.SelectedTabTextColor
+		else
+			TabButton.BackgroundColor3 = SelectedTheme.TabBackground
+			TabButton.Image.ImageColor3 = SelectedTheme.TabTextColor
+			TabButton.Title.TextColor3 = SelectedTheme.TabTextColor
+		end
+
+
+		-- Animate
+		task.wait(0.1)
+		if FirstTab or Ext then
+			TabButton.BackgroundColor3 = SelectedTheme.TabBackground
+			TabButton.Image.ImageColor3 = SelectedTheme.TabTextColor
+			TabButton.Title.TextColor3 = SelectedTheme.TabTextColor
+			TweenService:Create(TabButton, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0.7}):Play()
+			TweenService:Create(TabButton.Title, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {TextTransparency = 0.2}):Play()
+			TweenService:Create(TabButton.Image, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {ImageTransparency = 0.2}):Play()
+			TweenService:Create(TabButton.UIStroke, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {Transparency = 0.5}):Play()
+		elseif not Ext then
+			FirstTab = Name
+			TabButton.BackgroundColor3 = SelectedTheme.TabBackgroundSelected
+			TabButton.Image.ImageColor3 = SelectedTheme.SelectedTabTextColor
+			TabButton.Title.TextColor3 = SelectedTheme.SelectedTabTextColor
+			TweenService:Create(TabButton.Image, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {ImageTransparency = 0}):Play()
+			TweenService:Create(TabButton, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+			TweenService:Create(TabButton.Title, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()
+		end
+
+
+		TabButton.Interact.MouseButton1Click:Connect(function()
+			if Minimised then return end
+			TweenService:Create(TabButton, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+			TweenService:Create(TabButton.UIStroke, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+			TweenService:Create(TabButton.Title, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()
+			TweenService:Create(TabButton.Image, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {ImageTransparency = 0}):Play()
+			TweenService:Create(TabButton, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.TabBackgroundSelected}):Play()
+			TweenService:Create(TabButton.Title, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {TextColor3 = SelectedTheme.SelectedTabTextColor}):Play()
+			TweenService:Create(TabButton.Image, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {ImageColor3 = SelectedTheme.SelectedTabTextColor}):Play()
+
+			for _, OtherTabButton in ipairs(TabList:GetChildren()) do
+				if OtherTabButton.Name ~= "Template" and OtherTabButton.ClassName == "Frame" and OtherTabButton ~= TabButton and OtherTabButton.Name ~= "Placeholder" then
+					TweenService:Create(OtherTabButton, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.TabBackground}):Play()
+					TweenService:Create(OtherTabButton.Title, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {TextColor3 = SelectedTheme.TabTextColor}):Play()
+					TweenService:Create(OtherTabButton.Image, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {ImageColor3 = SelectedTheme.TabTextColor}):Play()
+					TweenService:Create(OtherTabButton, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0.7}):Play()
+					TweenService:Create(OtherTabButton.Title, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {TextTransparency = 0.2}):Play()
+					TweenService:Create(OtherTabButton.Image, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {ImageTransparency = 0.2}):Play()
+					TweenService:Create(OtherTabButton.UIStroke, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {Transparency = 0.5}):Play()
+				end
+			end
+
+			if Elements.UIPageLayout.CurrentPage ~= TabPage then
+				Elements.UIPageLayout:JumpTo(TabPage)
+			end
+		end)
+
+		local Tab = {}
+
+		-- Button
+		function Tab:CreateButton(ButtonSettings)
+			local ButtonValue = {}
+
+			local Button = Elements.Template.Button:Clone()
+			Button.Name = ButtonSettings.Name
+			Button.Title.Text = ButtonSettings.Name
+			Button.Visible = true
+			Button.Parent = TabPage
+
+			Button.BackgroundTransparency = 1
+			Button.UIStroke.Transparency = 1
+			Button.Title.TextTransparency = 1
+
+			TweenService:Create(Button, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+			TweenService:Create(Button.UIStroke, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()
+			TweenService:Create(Button.Title, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()	
+
+
+			Button.Interact.MouseButton1Click:Connect(function()
+				local Success, Response = pcall(ButtonSettings.Callback)
+				-- Prevents animation from trying to play if the button's callback called RayfieldLibrary:Destroy()
+				if rayfieldDestroyed then
+					return
+				end
+				if not Success then
+					TweenService:Create(Button, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = Color3.fromRGB(85, 0, 0)}):Play()
+					TweenService:Create(Button.ElementIndicator, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+					TweenService:Create(Button.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+					Button.Title.Text = "Callback Error"
+					print("Rayfield | "..ButtonSettings.Name.." Callback Error " ..tostring(Response))
+					warn('Check docs.sirius.menu for help with Rayfield specific development.')
+					task.wait(0.5)
+					Button.Title.Text = ButtonSettings.Name
+					TweenService:Create(Button, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackground}):Play()
+					TweenService:Create(Button.ElementIndicator, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {TextTransparency = 0.9}):Play()
+					TweenService:Create(Button.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()
+				else
+					if not ButtonSettings.Ext then
+						SaveConfiguration(ButtonSettings.Name..'\n')
+					end
+					TweenService:Create(Button, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackgroundHover}):Play()
+					TweenService:Create(Button.ElementIndicator, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+					TweenService:Create(Button.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+					task.wait(0.2)
+					TweenService:Create(Button, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackground}):Play()
+					TweenService:Create(Button.ElementIndicator, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {TextTransparency = 0.9}):Play()
+					TweenService:Create(Button.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()
+				end
+			end)
+
+			Button.MouseEnter:Connect(function()
+				TweenService:Create(Button, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackgroundHover}):Play()
+				TweenService:Create(Button.ElementIndicator, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {TextTransparency = 0.7}):Play()
+			end)
+
+			Button.MouseLeave:Connect(function()
+				TweenService:Create(Button, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackground}):Play()
+				TweenService:Create(Button.ElementIndicator, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {TextTransparency = 0.9}):Play()
+			end)
+
+			function ButtonValue:Set(NewButton)
+				Button.Title.Text = NewButton
+				Button.Name = NewButton
+			end
+
+			return ButtonValue
+		end
+
+		-- ColorPicker
+		function Tab:CreateColorPicker(ColorPickerSettings) -- by Throit
+			ColorPickerSettings.Type = "ColorPicker"
+			local ColorPicker = Elements.Template.ColorPicker:Clone()
+			local Background = ColorPicker.CPBackground
+			local Display = Background.Display
+			local Main = Background.MainCP
+			local Slider = ColorPicker.ColorSlider
+			ColorPicker.ClipsDescendants = true
+			ColorPicker.Name = ColorPickerSettings.Name
+			ColorPicker.Title.Text = ColorPickerSettings.Name
+			ColorPicker.Visible = true
+			ColorPicker.Parent = TabPage
+			ColorPicker.Size = UDim2.new(1, -10, 0, 45)
+			Background.Size = UDim2.new(0, 39, 0, 22)
+			Display.BackgroundTransparency = 0
+			Main.MainPoint.ImageTransparency = 1
+			ColorPicker.Interact.Size = UDim2.new(1, 0, 1, 0)
+			ColorPicker.Interact.Position = UDim2.new(0.5, 0, 0.5, 0)
+			ColorPicker.RGB.Position = UDim2.new(0, 17, 0, 70)
+			ColorPicker.HexInput.Position = UDim2.new(0, 17, 0, 90)
+			Main.ImageTransparency = 1
+			Background.BackgroundTransparency = 1
+
+			for _, rgbinput in ipairs(ColorPicker.RGB:GetChildren()) do
+				if rgbinput:IsA("Frame") then
+					rgbinput.BackgroundColor3 = SelectedTheme.InputBackground
+					rgbinput.UIStroke.Color = SelectedTheme.InputStroke
+				end
+			end
+
+			ColorPicker.HexInput.BackgroundColor3 = SelectedTheme.InputBackground
+			ColorPicker.HexInput.UIStroke.Color = SelectedTheme.InputStroke
+
+			local opened = false 
+			local mouse = Players.LocalPlayer:GetMouse()
+			Main.Image = "http://www.roblox.com/asset/?id=11415645739"
+			local mainDragging = false 
+			local sliderDragging = false 
+			ColorPicker.Interact.MouseButton1Down:Connect(function()
+				task.spawn(function()
+					TweenService:Create(ColorPicker, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackgroundHover}):Play()
+					TweenService:Create(ColorPicker.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+					task.wait(0.2)
+					TweenService:Create(ColorPicker, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackground}):Play()
+					TweenService:Create(ColorPicker.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()
+				end)
+
+				if not opened then
+					opened = true 
+					TweenService:Create(Background, TweenInfo.new(0.45, Enum.EasingStyle.Exponential), {Size = UDim2.new(0, 18, 0, 15)}):Play()
+					task.wait(0.1)
+					TweenService:Create(ColorPicker, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Size = UDim2.new(1, -10, 0, 120)}):Play()
+					TweenService:Create(Background, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Size = UDim2.new(0, 173, 0, 86)}):Play()
+					TweenService:Create(Display, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundTransparency = 1}):Play()
+					TweenService:Create(ColorPicker.Interact, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Position = UDim2.new(0.289, 0, 0.5, 0)}):Play()
+					TweenService:Create(ColorPicker.RGB, TweenInfo.new(0.8, Enum.EasingStyle.Exponential), {Position = UDim2.new(0, 17, 0, 40)}):Play()
+					TweenService:Create(ColorPicker.HexInput, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {Position = UDim2.new(0, 17, 0, 73)}):Play()
+					TweenService:Create(ColorPicker.Interact, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Size = UDim2.new(0.574, 0, 1, 0)}):Play()
+					TweenService:Create(Main.MainPoint, TweenInfo.new(0.2, Enum.EasingStyle.Exponential), {ImageTransparency = 0}):Play()
+					TweenService:Create(Main, TweenInfo.new(0.2, Enum.EasingStyle.Exponential), {ImageTransparency = SelectedTheme ~= RayfieldLibrary.Theme.Default and 0.25 or 0.1}):Play()
+					TweenService:Create(Background, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+				else
+					opened = false
+					TweenService:Create(ColorPicker, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Size = UDim2.new(1, -10, 0, 45)}):Play()
+					TweenService:Create(Background, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Size = UDim2.new(0, 39, 0, 22)}):Play()
+					TweenService:Create(ColorPicker.Interact, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Size = UDim2.new(1, 0, 1, 0)}):Play()
+					TweenService:Create(ColorPicker.Interact, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Position = UDim2.new(0.5, 0, 0.5, 0)}):Play()
+					TweenService:Create(ColorPicker.RGB, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Position = UDim2.new(0, 17, 0, 70)}):Play()
+					TweenService:Create(ColorPicker.HexInput, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {Position = UDim2.new(0, 17, 0, 90)}):Play()
+					TweenService:Create(Display, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+					TweenService:Create(Main.MainPoint, TweenInfo.new(0.2, Enum.EasingStyle.Exponential), {ImageTransparency = 1}):Play()
+					TweenService:Create(Main, TweenInfo.new(0.2, Enum.EasingStyle.Exponential), {ImageTransparency = 1}):Play()
+					TweenService:Create(Background, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundTransparency = 1}):Play()
+				end
+
+			end)
+
+			UserInputService.InputEnded:Connect(function(input, gameProcessed) if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then 
+					mainDragging = false
+					sliderDragging = false
+				end end)
+			Main.MouseButton1Down:Connect(function()
+				if opened then
+					mainDragging = true 
+				end
+			end)
+			Main.MainPoint.MouseButton1Down:Connect(function()
+				if opened then
+					mainDragging = true 
+				end
+			end)
+			Slider.MouseButton1Down:Connect(function()
+				sliderDragging = true 
+			end)
+			Slider.SliderPoint.MouseButton1Down:Connect(function()
+				sliderDragging = true 
+			end)
+			local h,s,v = ColorPickerSettings.Color:ToHSV()
+			local color = Color3.fromHSV(h,s,v) 
+			local hex = string.format("#%02X%02X%02X",color.R*0xFF,color.G*0xFF,color.B*0xFF)
+			ColorPicker.HexInput.InputBox.Text = hex
+			local function setDisplay()
+				--Main
+				Main.MainPoint.Position = UDim2.new(s,-Main.MainPoint.AbsoluteSize.X/2,1-v,-Main.MainPoint.AbsoluteSize.Y/2)
+				Main.MainPoint.ImageColor3 = Color3.fromHSV(h,s,v)
+				Background.BackgroundColor3 = Color3.fromHSV(h,1,1)
+				Display.BackgroundColor3 = Color3.fromHSV(h,s,v)
+				--Slider 
+				local x = h * Slider.AbsoluteSize.X
+				Slider.SliderPoint.Position = UDim2.new(0,x-Slider.SliderPoint.AbsoluteSize.X/2,0.5,0)
+				Slider.SliderPoint.ImageColor3 = Color3.fromHSV(h,1,1)
+				local color = Color3.fromHSV(h,s,v) 
+				local r,g,b = math.floor((color.R*255)+0.5),math.floor((color.G*255)+0.5),math.floor((color.B*255)+0.5)
+				ColorPicker.RGB.RInput.InputBox.Text = tostring(r)
+				ColorPicker.RGB.GInput.InputBox.Text = tostring(g)
+				ColorPicker.RGB.BInput.InputBox.Text = tostring(b)
+				hex = string.format("#%02X%02X%02X",color.R*0xFF,color.G*0xFF,color.B*0xFF)
+				ColorPicker.HexInput.InputBox.Text = hex
+			end
+			setDisplay()
+			ColorPicker.HexInput.InputBox.FocusLost:Connect(function()
+				if not pcall(function()
+						local r, g, b = string.match(ColorPicker.HexInput.InputBox.Text, "^#?(%w%w)(%w%w)(%w%w)$")
+						local rgbColor = Color3.fromRGB(tonumber(r, 16),tonumber(g, 16), tonumber(b, 16))
+						h,s,v = rgbColor:ToHSV()
+						hex = ColorPicker.HexInput.InputBox.Text
+						setDisplay()
+						ColorPickerSettings.Color = rgbColor
+					end) 
+				then 
+					ColorPicker.HexInput.InputBox.Text = hex 
+				end
+				pcall(function()ColorPickerSettings.Callback(Color3.fromHSV(h,s,v))end)
+				local r,g,b = math.floor((h*255)+0.5),math.floor((s*255)+0.5),math.floor((v*255)+0.5)
+				ColorPickerSettings.Color = Color3.fromRGB(r,g,b)
+				if not ColorPickerSettings.Ext then
+					SaveConfiguration()
+				end
+			end)
+			--RGB
+			local function rgbBoxes(box,toChange)
+				local value = tonumber(box.Text) 
+				local color = Color3.fromHSV(h,s,v) 
+				local oldR,oldG,oldB = math.floor((color.R*255)+0.5),math.floor((color.G*255)+0.5),math.floor((color.B*255)+0.5)
+				local save 
+				if toChange == "R" then save = oldR;oldR = value elseif toChange == "G" then save = oldG;oldG = value else save = oldB;oldB = value end
+				if value then 
+					value = math.clamp(value,0,255)
+					h,s,v = Color3.fromRGB(oldR,oldG,oldB):ToHSV()
+
+					setDisplay()
+				else 
+					box.Text = tostring(save)
+				end
+				local r,g,b = math.floor((h*255)+0.5),math.floor((s*255)+0.5),math.floor((v*255)+0.5)
+				ColorPickerSettings.Color = Color3.fromRGB(r,g,b)
+				if not ColorPickerSettings.Ext then
+					SaveConfiguration(ColorPickerSettings.Flag..'\n'..tostring(ColorPickerSettings.Color))
+				end
+			end
+			ColorPicker.RGB.RInput.InputBox.FocusLost:connect(function()
+				rgbBoxes(ColorPicker.RGB.RInput.InputBox,"R")
+				pcall(function()ColorPickerSettings.Callback(Color3.fromHSV(h,s,v))end)
+			end)
+			ColorPicker.RGB.GInput.InputBox.FocusLost:connect(function()
+				rgbBoxes(ColorPicker.RGB.GInput.InputBox,"G")
+				pcall(function()ColorPickerSettings.Callback(Color3.fromHSV(h,s,v))end)
+			end)
+			ColorPicker.RGB.BInput.InputBox.FocusLost:connect(function()
+				rgbBoxes(ColorPicker.RGB.BInput.InputBox,"B")
+				pcall(function()ColorPickerSettings.Callback(Color3.fromHSV(h,s,v))end)
+			end)
+
+			RunService.RenderStepped:connect(function()
+				if mainDragging then 
+					local localX = math.clamp(mouse.X-Main.AbsolutePosition.X,0,Main.AbsoluteSize.X)
+					local localY = math.clamp(mouse.Y-Main.AbsolutePosition.Y,0,Main.AbsoluteSize.Y)
+					Main.MainPoint.Position = UDim2.new(0,localX-Main.MainPoint.AbsoluteSize.X/2,0,localY-Main.MainPoint.AbsoluteSize.Y/2)
+					s = localX / Main.AbsoluteSize.X
+					v = 1 - (localY / Main.AbsoluteSize.Y)
+					Display.BackgroundColor3 = Color3.fromHSV(h,s,v)
+					Main.MainPoint.ImageColor3 = Color3.fromHSV(h,s,v)
+					Background.BackgroundColor3 = Color3.fromHSV(h,1,1)
+					local color = Color3.fromHSV(h,s,v) 
+					local r,g,b = math.floor((color.R*255)+0.5),math.floor((color.G*255)+0.5),math.floor((color.B*255)+0.5)
+					ColorPicker.RGB.RInput.InputBox.Text = tostring(r)
+					ColorPicker.RGB.GInput.InputBox.Text = tostring(g)
+					ColorPicker.RGB.BInput.InputBox.Text = tostring(b)
+					ColorPicker.HexInput.InputBox.Text = string.format("#%02X%02X%02X",color.R*0xFF,color.G*0xFF,color.B*0xFF)
+					pcall(function()ColorPickerSettings.Callback(Color3.fromHSV(h,s,v))end)
+					ColorPickerSettings.Color = Color3.fromRGB(r,g,b)
+					if not ColorPickerSettings.Ext then
+						SaveConfiguration()
+					end
+				end
+				if sliderDragging then 
+					local localX = math.clamp(mouse.X-Slider.AbsolutePosition.X,0,Slider.AbsoluteSize.X)
+					h = localX / Slider.AbsoluteSize.X
+					Display.BackgroundColor3 = Color3.fromHSV(h,s,v)
+					Slider.SliderPoint.Position = UDim2.new(0,localX-Slider.SliderPoint.AbsoluteSize.X/2,0.5,0)
+					Slider.SliderPoint.ImageColor3 = Color3.fromHSV(h,1,1)
+					Background.BackgroundColor3 = Color3.fromHSV(h,1,1)
+					Main.MainPoint.ImageColor3 = Color3.fromHSV(h,s,v)
+					local color = Color3.fromHSV(h,s,v) 
+					local r,g,b = math.floor((color.R*255)+0.5),math.floor((color.G*255)+0.5),math.floor((color.B*255)+0.5)
+					ColorPicker.RGB.RInput.InputBox.Text = tostring(r)
+					ColorPicker.RGB.GInput.InputBox.Text = tostring(g)
+					ColorPicker.RGB.BInput.InputBox.Text = tostring(b)
+					ColorPicker.HexInput.InputBox.Text = string.format("#%02X%02X%02X",color.R*0xFF,color.G*0xFF,color.B*0xFF)
+					pcall(function()ColorPickerSettings.Callback(Color3.fromHSV(h,s,v))end)
+					ColorPickerSettings.Color = Color3.fromRGB(r,g,b)
+					if not ColorPickerSettings.Ext then
+						SaveConfiguration()
+					end
+				end
+			end)
+
+			if Settings.ConfigurationSaving then
+				if Settings.ConfigurationSaving.Enabled and ColorPickerSettings.Flag then
+					RayfieldLibrary.Flags[ColorPickerSettings.Flag] = ColorPickerSettings
+				end
+			end
+
+			function ColorPickerSettings:Set(RGBColor)
+				ColorPickerSettings.Color = RGBColor
+				h,s,v = ColorPickerSettings.Color:ToHSV()
+				color = Color3.fromHSV(h,s,v)
+				setDisplay()
+			end
+
+			ColorPicker.MouseEnter:Connect(function()
+				TweenService:Create(ColorPicker, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackgroundHover}):Play()
+			end)
+
+			ColorPicker.MouseLeave:Connect(function()
+				TweenService:Create(ColorPicker, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackground}):Play()
+			end)
+
+			Rayfield.Main:GetPropertyChangedSignal('BackgroundColor3'):Connect(function()
+				for _, rgbinput in ipairs(ColorPicker.RGB:GetChildren()) do
+					if rgbinput:IsA("Frame") then
+						rgbinput.BackgroundColor3 = SelectedTheme.InputBackground
+						rgbinput.UIStroke.Color = SelectedTheme.InputStroke
+					end
+				end
+
+				ColorPicker.HexInput.BackgroundColor3 = SelectedTheme.InputBackground
+				ColorPicker.HexInput.UIStroke.Color = SelectedTheme.InputStroke
+			end)
+
+			return ColorPickerSettings
+		end
+
+		-- Section
+		function Tab:CreateSection(SectionName)
+
+			local SectionValue = {}
+
+			if SDone then
+				local SectionSpace = Elements.Template.SectionSpacing:Clone()
+				SectionSpace.Visible = true
+				SectionSpace.Parent = TabPage
+			end
+
+			local Section = Elements.Template.SectionTitle:Clone()
+			Section.Title.Text = SectionName
+			Section.Visible = true
+			Section.Parent = TabPage
+
+			Section.Title.TextTransparency = 1
+			TweenService:Create(Section.Title, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {TextTransparency = 0.4}):Play()
+
+			function SectionValue:Set(NewSection)
+				Section.Title.Text = NewSection
+			end
+
+			SDone = true
+
+			return SectionValue
+		end
+
+		-- Divider
+		function Tab:CreateDivider()
+			local DividerValue = {}
+
+			local Divider = Elements.Template.Divider:Clone()
+			Divider.Visible = true
+			Divider.Parent = TabPage
+
+			Divider.Divider.BackgroundTransparency = 1
+			TweenService:Create(Divider.Divider, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0.85}):Play()
+
+			function DividerValue:Set(Value)
+				Divider.Visible = Value
+			end
+
+			return DividerValue
+		end
+
+		-- Label
+		function Tab:CreateLabel(LabelText : string, Icon: number, Color : Color3, IgnoreTheme : boolean)
+			local LabelValue = {}
+
+			local Label = Elements.Template.Label:Clone()
+			Label.Title.Text = LabelText
+			Label.Visible = true
+			Label.Parent = TabPage
+
+			Label.BackgroundColor3 = Color or SelectedTheme.SecondaryElementBackground
+			Label.UIStroke.Color = Color or SelectedTheme.SecondaryElementStroke
+
+			if Icon then
+				if typeof(Icon) == 'string' and Icons then
+					local asset = getIcon(Icon)
+
+					Label.Icon.Image = 'rbxassetid://'..asset.id
+					Label.Icon.ImageRectOffset = asset.imageRectOffset
+					Label.Icon.ImageRectSize = asset.imageRectSize
+				else
+					Label.Icon.Image = getAssetUri(Icon)
+				end
+			else
+				Label.Icon.Image = "rbxassetid://" .. 0
+			end
+
+			if Icon and Label:FindFirstChild('Icon') then
+				Label.Title.Position = UDim2.new(0, 45, 0.5, 0)
+				Label.Title.Size = UDim2.new(1, -100, 0, 14)
+
+				if Icon then
+					if typeof(Icon) == 'string' and Icons then
+						local asset = getIcon(Icon)
+
+						Label.Icon.Image = 'rbxassetid://'..asset.id
+						Label.Icon.ImageRectOffset = asset.imageRectOffset
+						Label.Icon.ImageRectSize = asset.imageRectSize
+					else
+						Label.Icon.Image = getAssetUri(Icon)
+					end
+				else
+					Label.Icon.Image = "rbxassetid://" .. 0
+				end
+
+				Label.Icon.Visible = true
+			end
+
+			Label.Icon.ImageTransparency = 1
+			Label.BackgroundTransparency = 1
+			Label.UIStroke.Transparency = 1
+			Label.Title.TextTransparency = 1
+
+			TweenService:Create(Label, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {BackgroundTransparency = Color and 0.8 or 0}):Play()
+			TweenService:Create(Label.UIStroke, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {Transparency = Color and 0.7 or 0}):Play()
+			TweenService:Create(Label.Icon, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {ImageTransparency = 0.2}):Play()
+			TweenService:Create(Label.Title, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {TextTransparency = Color and 0.2 or 0}):Play()	
+
+			function LabelValue:Set(NewLabel, Icon, Color)
+				Label.Title.Text = NewLabel
+
+				if Color then
+					Label.BackgroundColor3 = Color or SelectedTheme.SecondaryElementBackground
+					Label.UIStroke.Color = Color or SelectedTheme.SecondaryElementStroke
+				end
+
+				if Icon and Label:FindFirstChild('Icon') then
+					Label.Title.Position = UDim2.new(0, 45, 0.5, 0)
+					Label.Title.Size = UDim2.new(1, -100, 0, 14)
+
+					if Icon then
+						if typeof(Icon) == 'string' and Icons then
+							local asset = getIcon(Icon)
+
+							Label.Icon.Image = 'rbxassetid://'..asset.id
+							Label.Icon.ImageRectOffset = asset.imageRectOffset
+							Label.Icon.ImageRectSize = asset.imageRectSize
+						else
+							Label.Icon.Image = getAssetUri(Icon)
+						end
+					else
+						Label.Icon.Image = "rbxassetid://" .. 0
+					end
+
+					Label.Icon.Visible = true
+				end
+			end
+
+			Rayfield.Main:GetPropertyChangedSignal('BackgroundColor3'):Connect(function()
+				Label.BackgroundColor3 = IgnoreTheme and (Color or Label.BackgroundColor3) or SelectedTheme.SecondaryElementBackground
+				Label.UIStroke.Color = IgnoreTheme and (Color or Label.BackgroundColor3) or SelectedTheme.SecondaryElementStroke
+			end)
+
+			return LabelValue
+		end
+
+		-- Paragraph
+		function Tab:CreateParagraph(ParagraphSettings)
+			local ParagraphValue = {}
+
+			local Paragraph = Elements.Template.Paragraph:Clone()
+			Paragraph.Title.Text = ParagraphSettings.Title
+			Paragraph.Content.Text = ParagraphSettings.Content
+			Paragraph.Visible = true
+			Paragraph.Parent = TabPage
+
+			Paragraph.BackgroundTransparency = 1
+			Paragraph.UIStroke.Transparency = 1
+			Paragraph.Title.TextTransparency = 1
+			Paragraph.Content.TextTransparency = 1
+
+			Paragraph.BackgroundColor3 = SelectedTheme.SecondaryElementBackground
+			Paragraph.UIStroke.Color = SelectedTheme.SecondaryElementStroke
+
+			TweenService:Create(Paragraph, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+			TweenService:Create(Paragraph.UIStroke, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()
+			TweenService:Create(Paragraph.Title, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()	
+			TweenService:Create(Paragraph.Content, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()	
+
+			function ParagraphValue:Set(NewParagraphSettings)
+				Paragraph.Title.Text = NewParagraphSettings.Title
+				Paragraph.Content.Text = NewParagraphSettings.Content
+			end
+
+			Rayfield.Main:GetPropertyChangedSignal('BackgroundColor3'):Connect(function()
+				Paragraph.BackgroundColor3 = SelectedTheme.SecondaryElementBackground
+				Paragraph.UIStroke.Color = SelectedTheme.SecondaryElementStroke
+			end)
+
+			return ParagraphValue
+		end
+
+		-- Input
+		function Tab:CreateInput(InputSettings)
+			local Input = Elements.Template.Input:Clone()
+			Input.Name = InputSettings.Name
+			Input.Title.Text = InputSettings.Name
+			Input.Visible = true
+			Input.Parent = TabPage
+
+			Input.BackgroundTransparency = 1
+			Input.UIStroke.Transparency = 1
+			Input.Title.TextTransparency = 1
+
+			Input.InputFrame.InputBox.Text = InputSettings.CurrentValue or ''
+
+			Input.InputFrame.BackgroundColor3 = SelectedTheme.InputBackground
+			Input.InputFrame.UIStroke.Color = SelectedTheme.InputStroke
+
+			TweenService:Create(Input, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+			TweenService:Create(Input.UIStroke, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()
+			TweenService:Create(Input.Title, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()	
+
+			Input.InputFrame.InputBox.PlaceholderText = InputSettings.PlaceholderText
+			Input.InputFrame.Size = UDim2.new(0, Input.InputFrame.InputBox.TextBounds.X + 24, 0, 30)
+
+			Input.InputFrame.InputBox.FocusLost:Connect(function()
+				local Success, Response = pcall(function()
+					InputSettings.Callback(Input.InputFrame.InputBox.Text)
+					InputSettings.CurrentValue = Input.InputFrame.InputBox.Text
+				end)
+
+				if not Success then
+					TweenService:Create(Input, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = Color3.fromRGB(85, 0, 0)}):Play()
+					TweenService:Create(Input.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+					Input.Title.Text = "Callback Error"
+					print("Rayfield | "..InputSettings.Name.." Callback Error " ..tostring(Response))
+					warn('Check docs.sirius.menu for help with Rayfield specific development.')
+					task.wait(0.5)
+					Input.Title.Text = InputSettings.Name
+					TweenService:Create(Input, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackground}):Play()
+					TweenService:Create(Input.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()
+				end
+
+				if InputSettings.RemoveTextAfterFocusLost then
+					Input.InputFrame.InputBox.Text = ""
+				end
+
+				if not InputSettings.Ext then
+					SaveConfiguration()
+				end
+			end)
+
+			Input.MouseEnter:Connect(function()
+				TweenService:Create(Input, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackgroundHover}):Play()
+			end)
+
+			Input.MouseLeave:Connect(function()
+				TweenService:Create(Input, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackground}):Play()
+			end)
+
+			Input.InputFrame.InputBox:GetPropertyChangedSignal("Text"):Connect(function()
+				TweenService:Create(Input.InputFrame, TweenInfo.new(0.55, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {Size = UDim2.new(0, Input.InputFrame.InputBox.TextBounds.X + 24, 0, 30)}):Play()
+			end)
+
+			function InputSettings:Set(text)
+				Input.InputFrame.InputBox.Text = text
+				InputSettings.CurrentValue = text
+
+				local Success, Response = pcall(function()
+					InputSettings.Callback(text)
+				end)
+
+				if not InputSettings.Ext then
+					SaveConfiguration()
+				end
+			end
+
+			if Settings.ConfigurationSaving then
+				if Settings.ConfigurationSaving.Enabled and InputSettings.Flag then
+					RayfieldLibrary.Flags[InputSettings.Flag] = InputSettings
+				end
+			end
+
+			Rayfield.Main:GetPropertyChangedSignal('BackgroundColor3'):Connect(function()
+				Input.InputFrame.BackgroundColor3 = SelectedTheme.InputBackground
+				Input.InputFrame.UIStroke.Color = SelectedTheme.InputStroke
+			end)
+
+			return InputSettings
+		end
+
+		-- Dropdown
+		function Tab:CreateDropdown(DropdownSettings)
+			local Dropdown = Elements.Template.Dropdown:Clone()
+			if string.find(DropdownSettings.Name,"closed") then
+				Dropdown.Name = "Dropdown"
+			else
+				Dropdown.Name = DropdownSettings.Name
+			end
+			Dropdown.Title.Text = DropdownSettings.Name
+			Dropdown.Visible = true
+			Dropdown.Parent = TabPage
+
+			Dropdown.List.Visible = false
+			if DropdownSettings.CurrentOption then
+				if type(DropdownSettings.CurrentOption) == "string" then
+					DropdownSettings.CurrentOption = {DropdownSettings.CurrentOption}
+				end
+				if not DropdownSettings.MultipleOptions and type(DropdownSettings.CurrentOption) == "table" then
+					DropdownSettings.CurrentOption = {DropdownSettings.CurrentOption[1]}
+				end
+			else
+				DropdownSettings.CurrentOption = {}
+			end
+
+			if DropdownSettings.MultipleOptions then
+				if DropdownSettings.CurrentOption and type(DropdownSettings.CurrentOption) == "table" then
+					if #DropdownSettings.CurrentOption == 1 then
+						Dropdown.Selected.Text = DropdownSettings.CurrentOption[1]
+					elseif #DropdownSettings.CurrentOption == 0 then
+						Dropdown.Selected.Text = "None"
+					else
+						Dropdown.Selected.Text = "Various"
+					end
+				else
+					DropdownSettings.CurrentOption = {}
+					Dropdown.Selected.Text = "None"
+				end
+			else
+				Dropdown.Selected.Text = DropdownSettings.CurrentOption[1] or "None"
+			end
+
+			Dropdown.Toggle.ImageColor3 = SelectedTheme.TextColor
+			TweenService:Create(Dropdown, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackground}):Play()
+
+			Dropdown.BackgroundTransparency = 1
+			Dropdown.UIStroke.Transparency = 1
+			Dropdown.Title.TextTransparency = 1
+
+			Dropdown.Size = UDim2.new(1, -10, 0, 45)
+
+			TweenService:Create(Dropdown, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+			TweenService:Create(Dropdown.UIStroke, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()
+			TweenService:Create(Dropdown.Title, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()	
+
+			for _, ununusedoption in ipairs(Dropdown.List:GetChildren()) do
+				if ununusedoption.ClassName == "Frame" and ununusedoption.Name ~= "Placeholder" then
+					ununusedoption:Destroy()
+				end
+			end
+
+			Dropdown.Toggle.Rotation = 180
+
+			Dropdown.Interact.MouseButton1Click:Connect(function()
+				TweenService:Create(Dropdown, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackgroundHover}):Play()
+				TweenService:Create(Dropdown.UIStroke, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+				task.wait(0.1)
+				TweenService:Create(Dropdown, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackground}):Play()
+				TweenService:Create(Dropdown.UIStroke, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()
+				if Debounce then return end
+				if Dropdown.List.Visible then
+					Debounce = true
+					TweenService:Create(Dropdown, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {Size = UDim2.new(1, -10, 0, 45)}):Play()
+					for _, DropdownOpt in ipairs(Dropdown.List:GetChildren()) do
+						if DropdownOpt.ClassName == "Frame" and DropdownOpt.Name ~= "Placeholder" then
+							TweenService:Create(DropdownOpt, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {BackgroundTransparency = 1}):Play()
+							TweenService:Create(DropdownOpt.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+							TweenService:Create(DropdownOpt.Title, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+						end
+					end
+					TweenService:Create(Dropdown.List, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {ScrollBarImageTransparency = 1}):Play()
+					TweenService:Create(Dropdown.Toggle, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {Rotation = 180}):Play()	
+					task.wait(0.35)
+					Dropdown.List.Visible = false
+					Debounce = false
+				else
+					TweenService:Create(Dropdown, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {Size = UDim2.new(1, -10, 0, 180)}):Play()
+					Dropdown.List.Visible = true
+					TweenService:Create(Dropdown.List, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {ScrollBarImageTransparency = 0.7}):Play()
+					TweenService:Create(Dropdown.Toggle, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {Rotation = 0}):Play()	
+					for _, DropdownOpt in ipairs(Dropdown.List:GetChildren()) do
+						if DropdownOpt.ClassName == "Frame" and DropdownOpt.Name ~= "Placeholder" then
+							if DropdownOpt.Name ~= Dropdown.Selected.Text then
+								TweenService:Create(DropdownOpt.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()
+							end
+							TweenService:Create(DropdownOpt, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+							TweenService:Create(DropdownOpt.Title, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()
+						end
+					end
+				end
+			end)
+
+			Dropdown.MouseEnter:Connect(function()
+				if not Dropdown.List.Visible then
+					TweenService:Create(Dropdown, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackgroundHover}):Play()
+				end
+			end)
+
+			Dropdown.MouseLeave:Connect(function()
+				TweenService:Create(Dropdown, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackground}):Play()
+			end)
+
+			local function SetDropdownOptions()
+				for _, Option in ipairs(DropdownSettings.Options) do
+					local DropdownOption = Elements.Template.Dropdown.List.Template:Clone()
+					DropdownOption.Name = Option
+					DropdownOption.Title.Text = Option
+					DropdownOption.Parent = Dropdown.List
+					DropdownOption.Visible = true
+
+					DropdownOption.BackgroundTransparency = 1
+					DropdownOption.UIStroke.Transparency = 1
+					DropdownOption.Title.TextTransparency = 1
+
+					--local Dropdown = Tab:CreateDropdown({
+					--	Name = "Dropdown Example",
+					--	Options = {"Option 1","Option 2"},
+					--	CurrentOption = {"Option 1"},
+					--  MultipleOptions = true,
+					--	Flag = "Dropdown1",
+					--	Callback = function(TableOfOptions)
+
+					--	end,
+					--})
+
+
+					DropdownOption.Interact.ZIndex = 50
+					DropdownOption.Interact.MouseButton1Click:Connect(function()
+						if not DropdownSettings.MultipleOptions and table.find(DropdownSettings.CurrentOption, Option) then 
+							return
+						end
+
+						if table.find(DropdownSettings.CurrentOption, Option) then
+							table.remove(DropdownSettings.CurrentOption, table.find(DropdownSettings.CurrentOption, Option))
+							if DropdownSettings.MultipleOptions then
+								if #DropdownSettings.CurrentOption == 1 then
+									Dropdown.Selected.Text = DropdownSettings.CurrentOption[1]
+								elseif #DropdownSettings.CurrentOption == 0 then
+									Dropdown.Selected.Text = "None"
+								else
+									Dropdown.Selected.Text = "Various"
+								end
+							else
+								Dropdown.Selected.Text = DropdownSettings.CurrentOption[1]
+							end
+						else
+							if not DropdownSettings.MultipleOptions then
+								table.clear(DropdownSettings.CurrentOption)
+							end
+							table.insert(DropdownSettings.CurrentOption, Option)
+							if DropdownSettings.MultipleOptions then
+								if #DropdownSettings.CurrentOption == 1 then
+									Dropdown.Selected.Text = DropdownSettings.CurrentOption[1]
+								elseif #DropdownSettings.CurrentOption == 0 then
+									Dropdown.Selected.Text = "None"
+								else
+									Dropdown.Selected.Text = "Various"
+								end
+							else
+								Dropdown.Selected.Text = DropdownSettings.CurrentOption[1]
+							end
+							TweenService:Create(DropdownOption.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+							TweenService:Create(DropdownOption, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.DropdownSelected}):Play()
+							Debounce = true
+						end
+
+
+						local Success, Response = pcall(function()
+							DropdownSettings.Callback(DropdownSettings.CurrentOption)
+						end)
+
+						if not Success then
+							TweenService:Create(Dropdown, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = Color3.fromRGB(85, 0, 0)}):Play()
+							TweenService:Create(Dropdown.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+							Dropdown.Title.Text = "Callback Error"
+							print("Rayfield | "..DropdownSettings.Name.." Callback Error " ..tostring(Response))
+							warn('Check docs.sirius.menu for help with Rayfield specific development.')
+							task.wait(0.5)
+							Dropdown.Title.Text = DropdownSettings.Name
+							TweenService:Create(Dropdown, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackground}):Play()
+							TweenService:Create(Dropdown.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()
+						end
+
+						for _, droption in ipairs(Dropdown.List:GetChildren()) do
+							if droption.ClassName == "Frame" and droption.Name ~= "Placeholder" and not table.find(DropdownSettings.CurrentOption, droption.Name) then
+								TweenService:Create(droption, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.DropdownUnselected}):Play()
+							end
+						end
+						if not DropdownSettings.MultipleOptions then
+							task.wait(0.1)
+							TweenService:Create(Dropdown, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {Size = UDim2.new(1, -10, 0, 45)}):Play()
+							for _, DropdownOpt in ipairs(Dropdown.List:GetChildren()) do
+								if DropdownOpt.ClassName == "Frame" and DropdownOpt.Name ~= "Placeholder" then
+									TweenService:Create(DropdownOpt, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {BackgroundTransparency = 1}):Play()
+									TweenService:Create(DropdownOpt.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+									TweenService:Create(DropdownOpt.Title, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+								end
+							end
+							TweenService:Create(Dropdown.List, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {ScrollBarImageTransparency = 1}):Play()
+							TweenService:Create(Dropdown.Toggle, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {Rotation = 180}):Play()	
+							task.wait(0.35)
+							Dropdown.List.Visible = false
+						end
+						Debounce = false
+						if not DropdownSettings.Ext then
+							SaveConfiguration()
+						end
+					end)
+
+					Rayfield.Main:GetPropertyChangedSignal('BackgroundColor3'):Connect(function()
+						DropdownOption.UIStroke.Color = SelectedTheme.ElementStroke
+					end)
+				end
+			end
+			SetDropdownOptions()
+
+			for _, droption in ipairs(Dropdown.List:GetChildren()) do
+				if droption.ClassName == "Frame" and droption.Name ~= "Placeholder" then
+					if not table.find(DropdownSettings.CurrentOption, droption.Name) then
+						droption.BackgroundColor3 = SelectedTheme.DropdownUnselected
+					else
+						droption.BackgroundColor3 = SelectedTheme.DropdownSelected
+					end
+
+					Rayfield.Main:GetPropertyChangedSignal('BackgroundColor3'):Connect(function()
+						if not table.find(DropdownSettings.CurrentOption, droption.Name) then
+							droption.BackgroundColor3 = SelectedTheme.DropdownUnselected
+						else
+							droption.BackgroundColor3 = SelectedTheme.DropdownSelected
+						end
+					end)
+				end
+			end
+
+			function DropdownSettings:Set(NewOption)
+				DropdownSettings.CurrentOption = NewOption
+
+				if typeof(DropdownSettings.CurrentOption) == "string" then
+					DropdownSettings.CurrentOption = {DropdownSettings.CurrentOption}
+				end
+
+				if not DropdownSettings.MultipleOptions then
+					DropdownSettings.CurrentOption = {DropdownSettings.CurrentOption[1]}
+				end
+
+				if DropdownSettings.MultipleOptions then
+					if #DropdownSettings.CurrentOption == 1 then
+						Dropdown.Selected.Text = DropdownSettings.CurrentOption[1]
+					elseif #DropdownSettings.CurrentOption == 0 then
+						Dropdown.Selected.Text = "None"
+					else
+						Dropdown.Selected.Text = "Various"
+					end
+				else
+					Dropdown.Selected.Text = DropdownSettings.CurrentOption[1]
+				end
+
+
+				local Success, Response = pcall(function()
+					DropdownSettings.Callback(NewOption)
+				end)
+				if not Success then
+					TweenService:Create(Dropdown, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = Color3.fromRGB(85, 0, 0)}):Play()
+					TweenService:Create(Dropdown.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+					Dropdown.Title.Text = "Callback Error"
+					print("Rayfield | "..DropdownSettings.Name.." Callback Error " ..tostring(Response))
+					warn('Check docs.sirius.menu for help with Rayfield specific development.')
+					task.wait(0.5)
+					Dropdown.Title.Text = DropdownSettings.Name
+					TweenService:Create(Dropdown, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackground}):Play()
+					TweenService:Create(Dropdown.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()
+				end
+
+				for _, droption in ipairs(Dropdown.List:GetChildren()) do
+					if droption.ClassName == "Frame" and droption.Name ~= "Placeholder" then
+						if not table.find(DropdownSettings.CurrentOption, droption.Name) then
+							droption.BackgroundColor3 = SelectedTheme.DropdownUnselected
+						else
+							droption.BackgroundColor3 = SelectedTheme.DropdownSelected
+						end
+					end
+				end
+				--SaveConfiguration()
+			end
+
+			function DropdownSettings:Refresh(optionsTable: table) -- updates a dropdown with new options from optionsTable
+				DropdownSettings.Options = optionsTable
+				for _, option in Dropdown.List:GetChildren() do
+					if option.ClassName == "Frame" and option.Name ~= "Placeholder" then
+						option:Destroy()
+					end
+				end
+				SetDropdownOptions()
+			end
+
+			if Settings.ConfigurationSaving then
+				if Settings.ConfigurationSaving.Enabled and DropdownSettings.Flag then
+					RayfieldLibrary.Flags[DropdownSettings.Flag] = DropdownSettings
+				end
+			end
+
+			Rayfield.Main:GetPropertyChangedSignal('BackgroundColor3'):Connect(function()
+				Dropdown.Toggle.ImageColor3 = SelectedTheme.TextColor
+				TweenService:Create(Dropdown, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackground}):Play()
+			end)
+
+			return DropdownSettings
+		end
+
+		-- Keybind
+		function Tab:CreateKeybind(KeybindSettings)
+			local CheckingForKey = false
+			local Keybind = Elements.Template.Keybind:Clone()
+			Keybind.Name = KeybindSettings.Name
+			Keybind.Title.Text = KeybindSettings.Name
+			Keybind.Visible = true
+			Keybind.Parent = TabPage
+
+			Keybind.BackgroundTransparency = 1
+			Keybind.UIStroke.Transparency = 1
+			Keybind.Title.TextTransparency = 1
+
+			Keybind.KeybindFrame.BackgroundColor3 = SelectedTheme.InputBackground
+			Keybind.KeybindFrame.UIStroke.Color = SelectedTheme.InputStroke
+
+			TweenService:Create(Keybind, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+			TweenService:Create(Keybind.UIStroke, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()
+			TweenService:Create(Keybind.Title, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()	
+
+			Keybind.KeybindFrame.KeybindBox.Text = KeybindSettings.CurrentKeybind
+			Keybind.KeybindFrame.Size = UDim2.new(0, Keybind.KeybindFrame.KeybindBox.TextBounds.X + 24, 0, 30)
+
+			Keybind.KeybindFrame.KeybindBox.Focused:Connect(function()
+				CheckingForKey = true
+				Keybind.KeybindFrame.KeybindBox.Text = ""
+			end)
+			Keybind.KeybindFrame.KeybindBox.FocusLost:Connect(function()
+				CheckingForKey = false
+				if Keybind.KeybindFrame.KeybindBox.Text == nil or Keybind.KeybindFrame.KeybindBox.Text == "" then
+					Keybind.KeybindFrame.KeybindBox.Text = KeybindSettings.CurrentKeybind
+					if not KeybindSettings.Ext then
+						SaveConfiguration()
+					end
+				end
+			end)
+
+			Keybind.MouseEnter:Connect(function()
+				TweenService:Create(Keybind, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackgroundHover}):Play()
+			end)
+
+			Keybind.MouseLeave:Connect(function()
+				TweenService:Create(Keybind, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackground}):Play()
+			end)
+
+			UserInputService.InputBegan:Connect(function(input, processed)
+				if CheckingForKey then
+					if input.KeyCode ~= Enum.KeyCode.Unknown then
+						local SplitMessage = string.split(tostring(input.KeyCode), ".")
+						local NewKeyNoEnum = SplitMessage[3]
+						Keybind.KeybindFrame.KeybindBox.Text = tostring(NewKeyNoEnum)
+						KeybindSettings.CurrentKeybind = tostring(NewKeyNoEnum)
+						Keybind.KeybindFrame.KeybindBox:ReleaseFocus()
+						if not KeybindSettings.Ext then
+							SaveConfiguration()
+						end
+
+						if KeybindSettings.CallOnChange then
+							KeybindSettings.Callback(tostring(NewKeyNoEnum))
+						end
+					end
+				elseif not KeybindSettings.CallOnChange and KeybindSettings.CurrentKeybind ~= nil and (input.KeyCode == Enum.KeyCode[KeybindSettings.CurrentKeybind] and not processed) then -- Test
+					local Held = true
+					local Connection
+					Connection = input.Changed:Connect(function(prop)
+						if prop == "UserInputState" then
+							Connection:Disconnect()
+							Held = false
+						end
+					end)
+
+					if not KeybindSettings.HoldToInteract then
+						local Success, Response = pcall(KeybindSettings.Callback)
+						if not Success then
+							TweenService:Create(Keybind, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = Color3.fromRGB(85, 0, 0)}):Play()
+							TweenService:Create(Keybind.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+							Keybind.Title.Text = "Callback Error"
+							print("Rayfield | "..KeybindSettings.Name.." Callback Error " ..tostring(Response))
+							warn('Check docs.sirius.menu for help with Rayfield specific development.')
+							task.wait(0.5)
+							Keybind.Title.Text = KeybindSettings.Name
+							TweenService:Create(Keybind, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackground}):Play()
+							TweenService:Create(Keybind.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()
+						end
+					else
+						task.wait(0.25)
+						if Held then
+							local Loop; Loop = RunService.Stepped:Connect(function()
+								if not Held then
+									KeybindSettings.Callback(false) -- maybe pcall this
+									Loop:Disconnect()
+								else
+									KeybindSettings.Callback(true) -- maybe pcall this
+								end
+							end)
+						end
+					end
+				end
+			end)
+
+			Keybind.KeybindFrame.KeybindBox:GetPropertyChangedSignal("Text"):Connect(function()
+				TweenService:Create(Keybind.KeybindFrame, TweenInfo.new(0.55, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {Size = UDim2.new(0, Keybind.KeybindFrame.KeybindBox.TextBounds.X + 24, 0, 30)}):Play()
+			end)
+
+			function KeybindSettings:Set(NewKeybind)
+				Keybind.KeybindFrame.KeybindBox.Text = tostring(NewKeybind)
+				KeybindSettings.CurrentKeybind = tostring(NewKeybind)
+				Keybind.KeybindFrame.KeybindBox:ReleaseFocus()
+				if not KeybindSettings.Ext then
+					SaveConfiguration()
+				end
+
+				if KeybindSettings.CallOnChange then
+					KeybindSettings.Callback(tostring(NewKeybind))
+				end
+			end
+
+			if Settings.ConfigurationSaving then
+				if Settings.ConfigurationSaving.Enabled and KeybindSettings.Flag then
+					RayfieldLibrary.Flags[KeybindSettings.Flag] = KeybindSettings
+				end
+			end
+
+			Rayfield.Main:GetPropertyChangedSignal('BackgroundColor3'):Connect(function()
+				Keybind.KeybindFrame.BackgroundColor3 = SelectedTheme.InputBackground
+				Keybind.KeybindFrame.UIStroke.Color = SelectedTheme.InputStroke
+			end)
+
+			return KeybindSettings
+		end
+
+		-- Toggle
+		function Tab:CreateToggle(ToggleSettings)
+			local ToggleValue = {}
+
+			local Toggle = Elements.Template.Toggle:Clone()
+			Toggle.Name = ToggleSettings.Name
+			Toggle.Title.Text = ToggleSettings.Name
+			Toggle.Visible = true
+			Toggle.Parent = TabPage
+
+			Toggle.BackgroundTransparency = 1
+			Toggle.UIStroke.Transparency = 1
+			Toggle.Title.TextTransparency = 1
+			Toggle.Switch.BackgroundColor3 = SelectedTheme.ToggleBackground
+
+			if SelectedTheme ~= RayfieldLibrary.Theme.Default then
+				Toggle.Switch.Shadow.Visible = false
+			end
+
+			TweenService:Create(Toggle, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+			TweenService:Create(Toggle.UIStroke, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()
+			TweenService:Create(Toggle.Title, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()	
+
+			if ToggleSettings.CurrentValue == true then
+				Toggle.Switch.Indicator.Position = UDim2.new(1, -20, 0.5, 0)
+				Toggle.Switch.Indicator.UIStroke.Color = SelectedTheme.ToggleEnabledStroke
+				Toggle.Switch.Indicator.BackgroundColor3 = SelectedTheme.ToggleEnabled
+				Toggle.Switch.UIStroke.Color = SelectedTheme.ToggleEnabledOuterStroke
+			else
+				Toggle.Switch.Indicator.Position = UDim2.new(1, -40, 0.5, 0)
+				Toggle.Switch.Indicator.UIStroke.Color = SelectedTheme.ToggleDisabledStroke
+				Toggle.Switch.Indicator.BackgroundColor3 = SelectedTheme.ToggleDisabled
+				Toggle.Switch.UIStroke.Color = SelectedTheme.ToggleDisabledOuterStroke
+			end
+
+			Toggle.MouseEnter:Connect(function()
+				TweenService:Create(Toggle, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackgroundHover}):Play()
+			end)
+
+			Toggle.MouseLeave:Connect(function()
+				TweenService:Create(Toggle, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackground}):Play()
+			end)
+
+			Toggle.Interact.MouseButton1Click:Connect(function()
+				if ToggleSettings.CurrentValue == true then
+					ToggleSettings.CurrentValue = false
+					TweenService:Create(Toggle, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackgroundHover}):Play()
+					TweenService:Create(Toggle.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+					TweenService:Create(Toggle.Switch.Indicator, TweenInfo.new(0.45, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Position = UDim2.new(1, -40, 0.5, 0)}):Play()
+					TweenService:Create(Toggle.Switch.Indicator.UIStroke, TweenInfo.new(0.55, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {Color = SelectedTheme.ToggleDisabledStroke}):Play()
+					TweenService:Create(Toggle.Switch.Indicator, TweenInfo.new(0.8, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {BackgroundColor3 = SelectedTheme.ToggleDisabled}):Play()
+					TweenService:Create(Toggle.Switch.UIStroke, TweenInfo.new(0.55, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {Color = SelectedTheme.ToggleDisabledOuterStroke}):Play()
+					TweenService:Create(Toggle, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackground}):Play()
+					TweenService:Create(Toggle.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()	
+				else
+					ToggleSettings.CurrentValue = true
+					TweenService:Create(Toggle, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackgroundHover}):Play()
+					TweenService:Create(Toggle.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+					TweenService:Create(Toggle.Switch.Indicator, TweenInfo.new(0.5, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Position = UDim2.new(1, -20, 0.5, 0)}):Play()
+					TweenService:Create(Toggle.Switch.Indicator.UIStroke, TweenInfo.new(0.55, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {Color = SelectedTheme.ToggleEnabledStroke}):Play()
+					TweenService:Create(Toggle.Switch.Indicator, TweenInfo.new(0.8, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {BackgroundColor3 = SelectedTheme.ToggleEnabled}):Play()
+					TweenService:Create(Toggle.Switch.UIStroke, TweenInfo.new(0.55, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {Color = SelectedTheme.ToggleEnabledOuterStroke}):Play()
+					TweenService:Create(Toggle, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackground}):Play()
+					TweenService:Create(Toggle.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()		
+				end
+
+				local Success, Response = pcall(function()
+					if debugX then warn('Running toggle \''..ToggleSettings.Name..'\' (Interact)') end
+
+					ToggleSettings.Callback(ToggleSettings.CurrentValue)
+				end)
+
+				if not Success then
+					TweenService:Create(Toggle, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = Color3.fromRGB(85, 0, 0)}):Play()
+					TweenService:Create(Toggle.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+					Toggle.Title.Text = "Callback Error"
+					print("Rayfield | "..ToggleSettings.Name.." Callback Error " ..tostring(Response))
+					warn('Check docs.sirius.menu for help with Rayfield specific development.')
+					task.wait(0.5)
+					Toggle.Title.Text = ToggleSettings.Name
+					TweenService:Create(Toggle, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackground}):Play()
+					TweenService:Create(Toggle.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()
+				end
+
+				if not ToggleSettings.Ext then
+					SaveConfiguration()
+				end
+			end)
+
+			function ToggleSettings:Set(NewToggleValue)
+				if NewToggleValue == true then
+					ToggleSettings.CurrentValue = true
+					TweenService:Create(Toggle, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackgroundHover}):Play()
+					TweenService:Create(Toggle.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+					TweenService:Create(Toggle.Switch.Indicator, TweenInfo.new(0.5, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Position = UDim2.new(1, -20, 0.5, 0)}):Play()
+					TweenService:Create(Toggle.Switch.Indicator, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Size = UDim2.new(0,12,0,12)}):Play()
+					TweenService:Create(Toggle.Switch.Indicator.UIStroke, TweenInfo.new(0.55, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {Color = SelectedTheme.ToggleEnabledStroke}):Play()
+					TweenService:Create(Toggle.Switch.Indicator, TweenInfo.new(0.8, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {BackgroundColor3 = SelectedTheme.ToggleEnabled}):Play()
+					TweenService:Create(Toggle.Switch.UIStroke, TweenInfo.new(0.55, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {Color = SelectedTheme.ToggleEnabledOuterStroke}):Play()
+					TweenService:Create(Toggle.Switch.Indicator, TweenInfo.new(0.45, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Size = UDim2.new(0,17,0,17)}):Play()	
+					TweenService:Create(Toggle, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackground}):Play()
+					TweenService:Create(Toggle.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()	
+				else
+					ToggleSettings.CurrentValue = false
+					TweenService:Create(Toggle, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackgroundHover}):Play()
+					TweenService:Create(Toggle.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+					TweenService:Create(Toggle.Switch.Indicator, TweenInfo.new(0.45, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Position = UDim2.new(1, -40, 0.5, 0)}):Play()
+					TweenService:Create(Toggle.Switch.Indicator, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Size = UDim2.new(0,12,0,12)}):Play()
+					TweenService:Create(Toggle.Switch.Indicator.UIStroke, TweenInfo.new(0.55, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {Color = SelectedTheme.ToggleDisabledStroke}):Play()
+					TweenService:Create(Toggle.Switch.Indicator, TweenInfo.new(0.8, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {BackgroundColor3 = SelectedTheme.ToggleDisabled}):Play()
+					TweenService:Create(Toggle.Switch.UIStroke, TweenInfo.new(0.55, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {Color = SelectedTheme.ToggleDisabledOuterStroke}):Play()
+					TweenService:Create(Toggle.Switch.Indicator, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Size = UDim2.new(0,17,0,17)}):Play()
+					TweenService:Create(Toggle, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackground}):Play()
+					TweenService:Create(Toggle.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()	
+				end
+
+				local Success, Response = pcall(function()
+					if debugX then warn('Running toggle \''..ToggleSettings.Name..'\' (:Set)') end
+
+					ToggleSettings.Callback(ToggleSettings.CurrentValue)
+				end)
+
+				if not Success then
+					TweenService:Create(Toggle, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = Color3.fromRGB(85, 0, 0)}):Play()
+					TweenService:Create(Toggle.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+					Toggle.Title.Text = "Callback Error"
+					print("Rayfield | "..ToggleSettings.Name.." Callback Error " ..tostring(Response))
+					warn('Check docs.sirius.menu for help with Rayfield specific development.')
+					task.wait(0.5)
+					Toggle.Title.Text = ToggleSettings.Name
+					TweenService:Create(Toggle, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackground}):Play()
+					TweenService:Create(Toggle.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()
+				end
+
+				if not ToggleSettings.Ext then
+					SaveConfiguration()
+				end
+			end
+
+			if not ToggleSettings.Ext then
+				if Settings.ConfigurationSaving then
+					if Settings.ConfigurationSaving.Enabled and ToggleSettings.Flag then
+						RayfieldLibrary.Flags[ToggleSettings.Flag] = ToggleSettings
+					end
+				end
+			end
+
+
+			Rayfield.Main:GetPropertyChangedSignal('BackgroundColor3'):Connect(function()
+				Toggle.Switch.BackgroundColor3 = SelectedTheme.ToggleBackground
+
+				if SelectedTheme ~= RayfieldLibrary.Theme.Default then
+					Toggle.Switch.Shadow.Visible = false
+				end
+
+				task.wait()
+
+				if not ToggleSettings.CurrentValue then
+					Toggle.Switch.Indicator.UIStroke.Color = SelectedTheme.ToggleDisabledStroke
+					Toggle.Switch.Indicator.BackgroundColor3 = SelectedTheme.ToggleDisabled
+					Toggle.Switch.UIStroke.Color = SelectedTheme.ToggleDisabledOuterStroke
+				else
+					Toggle.Switch.Indicator.UIStroke.Color = SelectedTheme.ToggleEnabledStroke
+					Toggle.Switch.Indicator.BackgroundColor3 = SelectedTheme.ToggleEnabled
+					Toggle.Switch.UIStroke.Color = SelectedTheme.ToggleEnabledOuterStroke
+				end
+			end)
+
+			return ToggleSettings
+		end
+
+		-- Slider
+		function Tab:CreateSlider(SliderSettings)
+			local SLDragging = false
+			local Slider = Elements.Template.Slider:Clone()
+			Slider.Name = SliderSettings.Name
+			Slider.Title.Text = SliderSettings.Name
+			Slider.Visible = true
+			Slider.Parent = TabPage
+
+			Slider.BackgroundTransparency = 1
+			Slider.UIStroke.Transparency = 1
+			Slider.Title.TextTransparency = 1
+
+			if SelectedTheme ~= RayfieldLibrary.Theme.Default then
+				Slider.Main.Shadow.Visible = false
+			end
+
+			Slider.Main.BackgroundColor3 = SelectedTheme.SliderBackground
+			Slider.Main.UIStroke.Color = SelectedTheme.SliderStroke
+			Slider.Main.Progress.UIStroke.Color = SelectedTheme.SliderStroke
+			Slider.Main.Progress.BackgroundColor3 = SelectedTheme.SliderProgress
+
+			TweenService:Create(Slider, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+			TweenService:Create(Slider.UIStroke, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()
+			TweenService:Create(Slider.Title, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()	
+
+			Slider.Main.Progress.Size =	UDim2.new(0, Slider.Main.AbsoluteSize.X * ((SliderSettings.CurrentValue + SliderSettings.Range[1]) / (SliderSettings.Range[2] - SliderSettings.Range[1])) > 5 and Slider.Main.AbsoluteSize.X * (SliderSettings.CurrentValue / (SliderSettings.Range[2] - SliderSettings.Range[1])) or 5, 1, 0)
+
+			if not SliderSettings.Suffix then
+				Slider.Main.Information.Text = tostring(SliderSettings.CurrentValue)
+			else
+				Slider.Main.Information.Text = tostring(SliderSettings.CurrentValue) .. " " .. SliderSettings.Suffix
+			end
+
+			Slider.MouseEnter:Connect(function()
+				TweenService:Create(Slider, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackgroundHover}):Play()
+			end)
+
+			Slider.MouseLeave:Connect(function()
+				TweenService:Create(Slider, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackground}):Play()
+			end)
+
+			Slider.Main.Interact.InputBegan:Connect(function(Input)
+				if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then 
+					TweenService:Create(Slider.Main.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+					TweenService:Create(Slider.Main.Progress.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+					SLDragging = true 
+				end 
+			end)
+
+			Slider.Main.Interact.InputEnded:Connect(function(Input) 
+				if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then 
+					TweenService:Create(Slider.Main.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 0.4}):Play()
+					TweenService:Create(Slider.Main.Progress.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 0.3}):Play()
+					SLDragging = false 
+				end 
+			end)
+
+			Slider.Main.Interact.MouseButton1Down:Connect(function(X)
+				local Current = Slider.Main.Progress.AbsolutePosition.X + Slider.Main.Progress.AbsoluteSize.X
+				local Start = Current
+				local Location = X
+				local Loop; Loop = RunService.Stepped:Connect(function()
+					if SLDragging then
+						Location = UserInputService:GetMouseLocation().X
+						Current = Current + 0.025 * (Location - Start)
+
+						if Location < Slider.Main.AbsolutePosition.X then
+							Location = Slider.Main.AbsolutePosition.X
+						elseif Location > Slider.Main.AbsolutePosition.X + Slider.Main.AbsoluteSize.X then
+							Location = Slider.Main.AbsolutePosition.X + Slider.Main.AbsoluteSize.X
+						end
+
+						if Current < Slider.Main.AbsolutePosition.X + 5 then
+							Current = Slider.Main.AbsolutePosition.X + 5
+						elseif Current > Slider.Main.AbsolutePosition.X + Slider.Main.AbsoluteSize.X then
+							Current = Slider.Main.AbsolutePosition.X + Slider.Main.AbsoluteSize.X
+						end
+
+						if Current <= Location and (Location - Start) < 0 then
+							Start = Location
+						elseif Current >= Location and (Location - Start) > 0 then
+							Start = Location
+						end
+						TweenService:Create(Slider.Main.Progress, TweenInfo.new(0.45, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {Size = UDim2.new(0, Current - Slider.Main.AbsolutePosition.X, 1, 0)}):Play()
+						local NewValue = SliderSettings.Range[1] + (Location - Slider.Main.AbsolutePosition.X) / Slider.Main.AbsoluteSize.X * (SliderSettings.Range[2] - SliderSettings.Range[1])
+
+						NewValue = math.floor(NewValue / SliderSettings.Increment + 0.5) * (SliderSettings.Increment * 10000000) / 10000000
+						NewValue = math.clamp(NewValue, SliderSettings.Range[1], SliderSettings.Range[2])
+
+						if not SliderSettings.Suffix then
+							Slider.Main.Information.Text = tostring(NewValue)
+						else
+							Slider.Main.Information.Text = tostring(NewValue) .. " " .. SliderSettings.Suffix
+						end
+
+						if SliderSettings.CurrentValue ~= NewValue then
+							local Success, Response = pcall(function()
+								SliderSettings.Callback(NewValue)
+							end)
+							if not Success then
+								TweenService:Create(Slider, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = Color3.fromRGB(85, 0, 0)}):Play()
+								TweenService:Create(Slider.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+								Slider.Title.Text = "Callback Error"
+								print("Rayfield | "..SliderSettings.Name.." Callback Error " ..tostring(Response))
+								warn('Check docs.sirius.menu for help with Rayfield specific development.')
+								task.wait(0.5)
+								Slider.Title.Text = SliderSettings.Name
+								TweenService:Create(Slider, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackground}):Play()
+								TweenService:Create(Slider.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()
+							end
+
+							SliderSettings.CurrentValue = NewValue
+							if not SliderSettings.Ext then
+								SaveConfiguration()
+							end
+						end
+					else
+						TweenService:Create(Slider.Main.Progress, TweenInfo.new(0.3, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {Size = UDim2.new(0, Location - Slider.Main.AbsolutePosition.X > 5 and Location - Slider.Main.AbsolutePosition.X or 5, 1, 0)}):Play()
+						Loop:Disconnect()
+					end
+				end)
+			end)
+
+			function SliderSettings:Set(NewVal)
+				local NewVal = math.clamp(NewVal, SliderSettings.Range[1], SliderSettings.Range[2])
+
+				TweenService:Create(Slider.Main.Progress, TweenInfo.new(0.45, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {Size = UDim2.new(0, Slider.Main.AbsoluteSize.X * ((NewVal + SliderSettings.Range[1]) / (SliderSettings.Range[2] - SliderSettings.Range[1])) > 5 and Slider.Main.AbsoluteSize.X * (NewVal / (SliderSettings.Range[2] - SliderSettings.Range[1])) or 5, 1, 0)}):Play()
+				Slider.Main.Information.Text = tostring(NewVal) .. " " .. (SliderSettings.Suffix or "")
+
+				local Success, Response = pcall(function()
+					SliderSettings.Callback(NewVal)
+				end)
+
+				if not Success then
+					TweenService:Create(Slider, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = Color3.fromRGB(85, 0, 0)}):Play()
+					TweenService:Create(Slider.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+					Slider.Title.Text = "Callback Error"
+					print("Rayfield | "..SliderSettings.Name.." Callback Error " ..tostring(Response))
+					warn('Check docs.sirius.menu for help with Rayfield specific development.')
+					task.wait(0.5)
+					Slider.Title.Text = SliderSettings.Name
+					TweenService:Create(Slider, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.ElementBackground}):Play()
+					TweenService:Create(Slider.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 0}):Play()
+				end
+
+				SliderSettings.CurrentValue = NewVal
+				if not SliderSettings.Ext then
+					SaveConfiguration()
+				end
+			end
+
+			if Settings.ConfigurationSaving then
+				if Settings.ConfigurationSaving.Enabled and SliderSettings.Flag then
+					RayfieldLibrary.Flags[SliderSettings.Flag] = SliderSettings
+				end
+			end
+
+			Rayfield.Main:GetPropertyChangedSignal('BackgroundColor3'):Connect(function()
+				if SelectedTheme ~= RayfieldLibrary.Theme.Default then
+					Slider.Main.Shadow.Visible = false
+				end
+
+				Slider.Main.BackgroundColor3 = SelectedTheme.SliderBackground
+				Slider.Main.UIStroke.Color = SelectedTheme.SliderStroke
+				Slider.Main.Progress.UIStroke.Color = SelectedTheme.SliderStroke
+				Slider.Main.Progress.BackgroundColor3 = SelectedTheme.SliderProgress
+			end)
+
+			return SliderSettings
+		end
+
+		Rayfield.Main:GetPropertyChangedSignal('BackgroundColor3'):Connect(function()
+			TabButton.UIStroke.Color = SelectedTheme.TabStroke
+
+			if Elements.UIPageLayout.CurrentPage == TabPage then
+				TabButton.BackgroundColor3 = SelectedTheme.TabBackgroundSelected
+				TabButton.Image.ImageColor3 = SelectedTheme.SelectedTabTextColor
+				TabButton.Title.TextColor3 = SelectedTheme.SelectedTabTextColor
+			else
+				TabButton.BackgroundColor3 = SelectedTheme.TabBackground
+				TabButton.Image.ImageColor3 = SelectedTheme.TabTextColor
+				TabButton.Title.TextColor3 = SelectedTheme.TabTextColor
+			end
+		end)
+
+		return Tab
+	end
+
+	Elements.Visible = true
+
+
+	task.wait(1.1)
+	TweenService:Create(Main, TweenInfo.new(0.7, Enum.EasingStyle.Exponential, Enum.EasingDirection.InOut), {Size = UDim2.new(0, 390, 0, 90)}):Play()
+	task.wait(0.3)
+	TweenService:Create(LoadingFrame.Title, TweenInfo.new(0.2, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+	TweenService:Create(LoadingFrame.Subtitle, TweenInfo.new(0.2, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+	TweenService:Create(LoadingFrame.Version, TweenInfo.new(0.2, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+	task.wait(0.1)
+	TweenService:Create(Main, TweenInfo.new(0.6, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {Size = useMobileSizing and UDim2.new(0, 500, 0, 275) or UDim2.new(0, 500, 0, 475)}):Play()
+	TweenService:Create(Main.Shadow.Image, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {ImageTransparency = 0.6}):Play()
+
+	Topbar.BackgroundTransparency = 1
+	Topbar.Divider.Size = UDim2.new(0, 0, 0, 1)
+	Topbar.Divider.BackgroundColor3 = SelectedTheme.ElementStroke
+	Topbar.CornerRepair.BackgroundTransparency = 1
+	Topbar.Title.TextTransparency = 1
+	Topbar.Search.ImageTransparency = 1
+	if Topbar:FindFirstChild('Settings') then
+		Topbar.Settings.ImageTransparency = 1
+	end
+	Topbar.ChangeSize.ImageTransparency = 1
+	Topbar.Hide.ImageTransparency = 1
+
+
+	task.wait(0.5)
+	Topbar.Visible = true
+	TweenService:Create(Topbar, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+	TweenService:Create(Topbar.CornerRepair, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0}):Play()
+	task.wait(0.1)
+	TweenService:Create(Topbar.Divider, TweenInfo.new(1, Enum.EasingStyle.Exponential), {Size = UDim2.new(1, 0, 0, 1)}):Play()
+	TweenService:Create(Topbar.Title, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()
+	task.wait(0.05)
+	TweenService:Create(Topbar.Search, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {ImageTransparency = 0.8}):Play()
+	task.wait(0.05)
+	if Topbar:FindFirstChild('Settings') then
+		TweenService:Create(Topbar.Settings, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {ImageTransparency = 0.8}):Play()
+		task.wait(0.05)
+	end
+	TweenService:Create(Topbar.ChangeSize, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {ImageTransparency = 0.8}):Play()
+	task.wait(0.05)
+	TweenService:Create(Topbar.Hide, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {ImageTransparency = 0.8}):Play()
+	task.wait(0.3)
+
+	if dragBar then
+		TweenService:Create(dragBarCosmetic, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0.7}):Play()
+	end
+
+	function Window.ModifyTheme(NewTheme)
+		local success = pcall(ChangeTheme, NewTheme)
+		if not success then
+			RayfieldLibrary:Notify({Title = 'Unable to Change Theme', Content = 'We are unable find a theme on file.', Image = 4400704299})
+		else
+			RayfieldLibrary:Notify({Title = 'Theme Changed', Content = 'Successfully changed theme to '..(typeof(NewTheme) == 'string' and NewTheme or 'Custom Theme')..'.', Image = 4483362748})
+		end
+	end
+
+	local success, result = pcall(function()
+		createSettings(Window)
+	end)
+
+	if not success then warn('Rayfield had an issue creating settings.') end
+
+	return Window
+end
+
+local function setVisibility(visibility: boolean, notify: boolean?)
+	if Debounce then return end
+	if visibility then
+		Hidden = false
+		Unhide()
+	else
+		Hidden = true
+		Hide(notify)
+	end
+end
+
+function RayfieldLibrary:SetVisibility(visibility: boolean)
+	setVisibility(visibility, false)
+end
+
+function RayfieldLibrary:IsVisible(): boolean
+	return not Hidden
+end
+
+local hideHotkeyConnection -- Has to be initialized here since the connection is made later in the script
+function RayfieldLibrary:Destroy()
+	rayfieldDestroyed = true
+	hideHotkeyConnection:Disconnect()
+	Rayfield:Destroy()
+end
+
+Topbar.ChangeSize.MouseButton1Click:Connect(function()
+	if Debounce then return end
+	if Minimised then
+		Minimised = false
+		Maximise()
+	else
+		Minimised = true
+		Minimise()
+	end
+end)
+
+Main.Search.Input:GetPropertyChangedSignal('Text'):Connect(function()
+	if #Main.Search.Input.Text > 0 then
+		if not Elements.UIPageLayout.CurrentPage:FindFirstChild('SearchTitle-fsefsefesfsefesfesfThanks') then 
+			local searchTitle = Elements.Template.SectionTitle:Clone()
+			searchTitle.Parent = Elements.UIPageLayout.CurrentPage
+			searchTitle.Name = 'SearchTitle-fsefsefesfsefesfesfThanks'
+			searchTitle.LayoutOrder = -100
+			searchTitle.Title.Text = "Results from '"..Elements.UIPageLayout.CurrentPage.Name.."'"
+			searchTitle.Visible = true
+		end
+	else
+		local searchTitle = Elements.UIPageLayout.CurrentPage:FindFirstChild('SearchTitle-fsefsefesfsefesfesfThanks')
+
+		if searchTitle then
+			searchTitle:Destroy()
+		end
+	end
+
+	for _, element in ipairs(Elements.UIPageLayout.CurrentPage:GetChildren()) do
+		if element.ClassName ~= 'UIListLayout' and element.Name ~= 'Placeholder' and element.Name ~= 'SearchTitle-fsefsefesfsefesfesfThanks' then
+			if element.Name == 'SectionTitle' then
+				if #Main.Search.Input.Text == 0 then
+					element.Visible = true
+				else
+					element.Visible = false
+				end
+			else
+				if string.lower(element.Name):find(string.lower(Main.Search.Input.Text), 1, true) then
+					element.Visible = true
+				else
+					element.Visible = false
+				end
+			end
+		end
+	end
+end)
+
+Main.Search.Input.FocusLost:Connect(function(enterPressed)
+	if #Main.Search.Input.Text == 0 and searchOpen then
+		task.wait(0.12)
+		closeSearch()
+	end
+end)
+
+Topbar.Search.MouseButton1Click:Connect(function()
+	task.spawn(function()
+		if searchOpen then
+			closeSearch()
+		else
+			openSearch()
+		end
+	end)
+end)
+
+if Topbar:FindFirstChild('Settings') then
+	Topbar.Settings.MouseButton1Click:Connect(function()
+		task.spawn(function()
+			for _, OtherTabButton in ipairs(TabList:GetChildren()) do
+				if OtherTabButton.Name ~= "Template" and OtherTabButton.ClassName == "Frame" and OtherTabButton ~= TabButton and OtherTabButton.Name ~= "Placeholder" then
+					TweenService:Create(OtherTabButton, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {BackgroundColor3 = SelectedTheme.TabBackground}):Play()
+					TweenService:Create(OtherTabButton.Title, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {TextColor3 = SelectedTheme.TabTextColor}):Play()
+					TweenService:Create(OtherTabButton.Image, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {ImageColor3 = SelectedTheme.TabTextColor}):Play()
+					TweenService:Create(OtherTabButton, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0.7}):Play()
+					TweenService:Create(OtherTabButton.Title, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {TextTransparency = 0.2}):Play()
+					TweenService:Create(OtherTabButton.Image, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {ImageTransparency = 0.2}):Play()
+					TweenService:Create(OtherTabButton.UIStroke, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {Transparency = 0.5}):Play()
+				end
+			end
+
+			Elements.UIPageLayout:JumpTo(Elements['Rayfield Settings'])
+		end)
+	end)
+
+end
+
+
+Topbar.Hide.MouseButton1Click:Connect(function()
+	setVisibility(Hidden, not useMobileSizing)
+end)
+
+hideHotkeyConnection = UserInputService.InputBegan:Connect(function(input, processed)
+	if (input.KeyCode == Enum.KeyCode[getSetting("General", "rayfieldOpen")]) and not processed then
+		if Debounce then return end
+		if Hidden then
+			Hidden = false
+			Unhide()
+		else
+			Hidden = true
+			Hide()
+		end
+	end
+end)
+
+if MPrompt then
+	MPrompt.Interact.MouseButton1Click:Connect(function()
+		if Debounce then return end
+		if Hidden then
+			Hidden = false
+			Unhide()
+		end
+	end)
+end
+
+for _, TopbarButton in ipairs(Topbar:GetChildren()) do
+	if TopbarButton.ClassName == "ImageButton" and TopbarButton.Name ~= 'Icon' then
+		TopbarButton.MouseEnter:Connect(function()
+			TweenService:Create(TopbarButton, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {ImageTransparency = 0}):Play()
+		end)
+
+		TopbarButton.MouseLeave:Connect(function()
+			TweenService:Create(TopbarButton, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), {ImageTransparency = 0.8}):Play()
+		end)
+	end
+end
+
+
+function RayfieldLibrary:LoadConfiguration()
+	local config
+
+	if debugX then
+		warn('Loading Configuration')
+	end
+
+	if useStudio then
+		config = [[{"Toggle1adwawd":true,"ColorPicker1awd":{"B":255,"G":255,"R":255},"Slider1dawd":100,"ColorPicfsefker1":{"B":255,"G":255,"R":255},"Slidefefsr1":80,"dawdawd":"","Input1":"hh","Keybind1":"B","Dropdown1":["Ocean"]}]]
+	end
+
+	if CEnabled then
+		local notified
+		local loaded
+
+		local success, result = pcall(function()
+			if useStudio and config then
+				loaded = LoadConfiguration(config)
+				return
+			end
+
+			if isfile then 
+				if isfile(ConfigurationFolder .. "/" .. CFileName .. ConfigurationExtension) then
+					loaded = LoadConfiguration(readfile(ConfigurationFolder .. "/" .. CFileName .. ConfigurationExtension))
+				end
+			else
+				notified = true
+				RayfieldLibrary:Notify({Title = "Rayfield Configurations", Content = "We couldn't enable Configuration Saving as you are not using software with filesystem support.", Image = 4384402990})
+			end
+		end)
+
+		if success and loaded and not notified then
+			RayfieldLibrary:Notify({Title = "Rayfield Configurations", Content = "The configuration file for this script has been loaded from a previous session.", Image = 4384403532})
+		elseif not success and not notified then
+			warn('Rayfield Configurations Error | '..tostring(result))
+			RayfieldLibrary:Notify({Title = "Rayfield Configurations", Content = "We've encountered an issue loading your configuration correctly.\n\nCheck the Developer Console for more information.", Image = 4384402990})
+		end
+	end
+
+	globalLoaded = true
+end
+
+
+
+if useStudio then
+	-- run w/ studio
+	-- Feel free to place your own script here to see how it'd work in Roblox Studio before running it on your execution software.
+
+
+	--local Window = RayfieldLibrary:CreateWindow({
+	--	Name = "Rayfield Example Window",
+	--	LoadingTitle = "Rayfield Interface Suite",
+	--	Theme = 'Default',
+	--	Icon = 0,
+	--	LoadingSubtitle = "by Sirius",
+	--	ConfigurationSaving = {
+	--		Enabled = true,
+	--		FolderName = nil, -- Create a custom folder for your hub/game
+	--		FileName = "Big Hub52"
+	--	},
+	--	Discord = {
+	--		Enabled = false,
+	--		Invite = "noinvitelink", -- The Discord invite code, do not include discord.gg/. E.g. discord.gg/ABCD would be ABCD
+	--		RememberJoins = true -- Set this to false to make them join the discord every time they load it up
+	--	},
+	--	KeySystem = false, -- Set this to true to use our key system
+	--	KeySettings = {
+	--		Title = "Untitled",
+	--		Subtitle = "Key System",
+	--		Note = "No method of obtaining the key is provided",
+	--		FileName = "Key", -- It is recommended to use something unique as other scripts using Rayfield may overwrite your key file
+	--		SaveKey = true, -- The user's key will be saved, but if you change the key, they will be unable to use your script
+	--		GrabKeyFromSite = false, -- If this is true, set Key below to the RAW site you would like Rayfield to get the key from
+	--		Key = {"Hello"} -- List of keys that will be accepted by the system, can be RAW file links (pastebin, github etc) or simple strings ("hello","key22")
+	--	}
+	--})
+
+	--local Tab = Window:CreateTab("Tab Example", 'key-round') -- Title, Image
+	--local Tab2 = Window:CreateTab("Tab Example 2", 4483362458) -- Title, Image
+
+	--local Section = Tab2:CreateSection("Section")
+
+
+	--local ColorPicker = Tab2:CreateColorPicker({
+	--	Name = "Color Picker",
+	--	Color = Color3.fromRGB(255,255,255),
+	--	Flag = "ColorPicfsefker1", -- A flag is the identifier for the configuration file, make sure every element has a different flag if you're using configuration saving to ensure no overlaps
+	--	Callback = function(Value)
+	--		-- The function that takes place every time the color picker is moved/changed
+	--		-- The variable (Value) is a Color3fromRGB value based on which color is selected
+	--	end
+	--})
+
+	--local Slider = Tab2:CreateSlider({
+	--	Name = "Slider Example",
+	--	Range = {0, 100},
+	--	Increment = 10,
+	--	Suffix = "Bananas",
+	--	CurrentValue = 40,
+	--	Flag = "Slidefefsr1", -- A flag is the identifier for the configuration file, make sure every element has a different flag if you're using configuration saving to ensure no overlaps
+	--	Callback = function(Value)
+	--		-- The function that takes place when the slider changes
+	--		-- The variable (Value) is a number which correlates to the value the slider is currently at
+	--	end,
+	--})
+
+	--local Input = Tab2:CreateInput({
+	--	Name = "Input Example",
+	--	CurrentValue = '',
+	--	PlaceholderText = "Input Placeholder",
+	--	Flag = 'dawdawd',
+	--	RemoveTextAfterFocusLost = false,
+	--	Callback = function(Text)
+	--		-- The function that takes place when the input is changed
+	--		-- The variable (Text) is a string for the value in the text box
+	--	end,
+	--})
+
+
+	----RayfieldLibrary:Notify({Title = "Rayfield Interface", Content = "Welcome to Rayfield. These - are the brand new notification design for Rayfield, with custom sizing and Rayfield calculated wait times.", Image = 4483362458})
+
+	--local Section = Tab:CreateSection("Section Example")
+
+	--local Button = Tab:CreateButton({
+	--	Name = "Change Theme",
+	--	Callback = function()
+	--		-- The function that takes place when the button is pressed
+	--		Window.ModifyTheme('DarkBlue')
+	--	end,
+	--})
+
+	--local Toggle = Tab:CreateToggle({
+	--	Name = "Toggle Example",
+	--	CurrentValue = false,
+	--	Flag = "Toggle1adwawd", -- A flag is the identifier for the configuration file, make sure every element has a different flag if you're using configuration saving to ensure no overlaps
+	--	Callback = function(Value)
+	--		-- The function that takes place when the toggle is pressed
+	--		-- The variable (Value) is a boolean on whether the toggle is true or false
+	--	end,
+	--})
+
+	--local ColorPicker = Tab:CreateColorPicker({
+	--	Name = "Color Picker",
+	--	Color = Color3.fromRGB(255,255,255),
+	--	Flag = "ColorPicker1awd", -- A flag is the identifier for the configuration file, make sure every element has a different flag if you're using configuration saving to ensure no overlaps
+	--	Callback = function(Value)
+	--		-- The function that takes place every time the color picker is moved/changed
+	--		-- The variable (Value) is a Color3fromRGB value based on which color is selected
+	--	end
+	--})
+
+	--local Slider = Tab:CreateSlider({
+	--	Name = "Slider Example",
+	--	Range = {0, 100},
+	--	Increment = 10,
+	--	Suffix = "Bananas",
+	--	CurrentValue = 40,
+	--	Flag = "Slider1dawd", -- A flag is the identifier for the configuration file, make sure every element has a different flag if you're using configuration saving to ensure no overlaps
+	--	Callback = function(Value)
+	--		-- The function that takes place when the slider changes
+	--		-- The variable (Value) is a number which correlates to the value the slider is currently at
+	--	end,
+	--})
+
+	--local Input = Tab:CreateInput({
+	--	Name = "Input Example",
+	--	CurrentValue = "Helo",
+	--	PlaceholderText = "Adaptive Input",
+	--	RemoveTextAfterFocusLost = false,
+	--	Flag = 'Input1',
+	--	Callback = function(Text)
+	--		-- The function that takes place when the input is changed
+	--		-- The variable (Text) is a string for the value in the text box
+	--	end,
+	--})
+
+	--local thoptions = {}
+	--for themename, theme in pairs(RayfieldLibrary.Theme) do
+	--	table.insert(thoptions, themename)
+	--end
+
+	--local Dropdown = Tab:CreateDropdown({
+	--	Name = "Theme",
+	--	Options = thoptions,
+	--	CurrentOption = {"Default"},
+	--	MultipleOptions = false,
+	--	Flag = "Dropdown1", -- A flag is the identifier for the configuration file, make sure every element has a different flag if you're using configuration saving to ensure no overlaps
+	--	Callback = function(Options)
+	--		--Window.ModifyTheme(Options[1])
+	--		-- The function that takes place when the selected option is changed
+	--		-- The variable (Options) is a table of strings for the current selected options
+	--	end,
+	--})
+
+
+	--Window.ModifyTheme({
+	--	TextColor = Color3.fromRGB(50, 55, 60),
+	--	Background = Color3.fromRGB(240, 245, 250),
+	--	Topbar = Color3.fromRGB(215, 225, 235),
+	--	Shadow = Color3.fromRGB(200, 210, 220),
+
+	--	NotificationBackground = Color3.fromRGB(210, 220, 230),
+	--	NotificationActionsBackground = Color3.fromRGB(225, 230, 240),
+
+	--	TabBackground = Color3.fromRGB(200, 210, 220),
+	--	TabStroke = Color3.fromRGB(180, 190, 200),
+	--	TabBackgroundSelected = Color3.fromRGB(175, 185, 200),
+	--	TabTextColor = Color3.fromRGB(50, 55, 60),
+	--	SelectedTabTextColor = Color3.fromRGB(30, 35, 40),
+
+	--	ElementBackground = Color3.fromRGB(210, 220, 230),
+	--	ElementBackgroundHover = Color3.fromRGB(220, 230, 240),
+	--	SecondaryElementBackground = Color3.fromRGB(200, 210, 220),
+	--	ElementStroke = Color3.fromRGB(190, 200, 210),
+	--	SecondaryElementStroke = Color3.fromRGB(180, 190, 200),
+
+	--	SliderBackground = Color3.fromRGB(200, 220, 235),  -- Lighter shade
+	--	SliderProgress = Color3.fromRGB(70, 130, 180),
+	--	SliderStroke = Color3.fromRGB(150, 180, 220),
+
+	--	ToggleBackground = Color3.fromRGB(210, 220, 230),
+	--	ToggleEnabled = Color3.fromRGB(70, 160, 210),
+	--	ToggleDisabled = Color3.fromRGB(180, 180, 180),
+	--	ToggleEnabledStroke = Color3.fromRGB(60, 150, 200),
+	--	ToggleDisabledStroke = Color3.fromRGB(140, 140, 140),
+	--	ToggleEnabledOuterStroke = Color3.fromRGB(100, 120, 140),
+	--	ToggleDisabledOuterStroke = Color3.fromRGB(120, 120, 130),
+
+	--	DropdownSelected = Color3.fromRGB(220, 230, 240),
+	--	DropdownUnselected = Color3.fromRGB(200, 210, 220),
+
+	--	InputBackground = Color3.fromRGB(220, 230, 240),
+	--	InputStroke = Color3.fromRGB(180, 190, 200),
+	--	PlaceholderColor = Color3.fromRGB(150, 150, 150)
+	--})
+
+	--local Keybind = Tab:CreateKeybind({
+	--	Name = "Keybind Example",
+	--	CurrentKeybind = "Q",
+	--	HoldToInteract = false,
+	--	Flag = "Keybind1", -- A flag is the identifier for the configuration file, make sure every element has a different flag if you're using configuration saving to ensure no overlaps
+	--	Callback = function(Keybind)
+	--		-- The function that takes place when the keybind is pressed
+	--		-- The variable (Keybind) is a boolean for whether the keybind is being held or not (HoldToInteract needs to be true)
+	--	end,
+	--})
+
+	--local Label = Tab:CreateLabel("Label Example")
+
+	--local Label2 = Tab:CreateLabel("Warning", 4483362458, Color3.fromRGB(255, 159, 49),  true)
+
+	--local Paragraph = Tab:CreateParagraph({Title = "Paragraph Example", Content = "Paragraph ExampleParagraph ExampleParagraph ExampleParagraph ExampleParagraph ExampleParagraph ExampleParagraph ExampleParagraph ExampleParagraph ExampleParagraph ExampleParagraph ExampleParagraph ExampleParagraph ExampleParagraph Example"})
+end
+
+if CEnabled and Main:FindFirstChild('Notice') then
+	Main.Notice.BackgroundTransparency = 1
+	Main.Notice.Title.TextTransparency = 1
+	Main.Notice.Size = UDim2.new(0, 0, 0, 0)
+	Main.Notice.Position = UDim2.new(0.5, 0, 0, -100)
+	Main.Notice.Visible = true
+
+
+	TweenService:Create(Main.Notice, TweenInfo.new(0.5, Enum.EasingStyle.Exponential, Enum.EasingDirection.InOut), {Size = UDim2.new(0, 280, 0, 35), Position = UDim2.new(0.5, 0, 0, -50), BackgroundTransparency = 0.5}):Play()
+	TweenService:Create(Main.Notice.Title, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 0.1}):Play()
+end
+-- AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA why :(
+--if not useStudio then
+--	task.spawn(loadWithTimeout, "https://raw.githubusercontent.com/SiriusSoftwareLtd/Sirius/refs/heads/request/boost.lua")
+--end
+
+task.delay(4, function()
+	RayfieldLibrary.LoadConfiguration()
+	if Main:FindFirstChild('Notice') and Main.Notice.Visible then
+		TweenService:Create(Main.Notice, TweenInfo.new(0.5, Enum.EasingStyle.Exponential, Enum.EasingDirection.InOut), {Size = UDim2.new(0, 100, 0, 25), Position = UDim2.new(0.5, 0, 0, -100), BackgroundTransparency = 1}):Play()
+		TweenService:Create(Main.Notice.Title, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+
+		task.wait(0.5)
+		Main.Notice.Visible = false
+	end
+end)
+
+return RayfieldLibrary
