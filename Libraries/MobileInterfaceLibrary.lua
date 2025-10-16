@@ -1761,9 +1761,15 @@ function RayfieldLibrary:CreateWindow(Settings)
 			makefolder(RayfieldFolder.."/Key System")
 		end
 
-		if typeof(Settings.KeySettings.Key) == "string" then Settings.KeySettings.Key = {Settings.KeySettings.Key} end
+		-- Support both string keys and function validation (e.g., AuthGuard)
+		local isAuthGuardMode = false
+		if typeof(Settings.KeySettings.Key) == "function" then
+			isAuthGuardMode = true
+		elseif typeof(Settings.KeySettings.Key) == "string" then 
+			Settings.KeySettings.Key = {Settings.KeySettings.Key} 
+		end
 
-		if Settings.KeySettings.GrabKeyFromSite then
+		if not isAuthGuardMode and Settings.KeySettings.GrabKeyFromSite then
 			for i, Key in ipairs(Settings.KeySettings.Key) do
 				local Success, Response = pcall(function()
 					Settings.KeySettings.Key[i] = tostring(game:HttpGet(Key):gsub("[\n\r]", " "))
@@ -1780,10 +1786,21 @@ function RayfieldLibrary:CreateWindow(Settings)
 			Settings.KeySettings.FileName = "No file name specified"
 		end
 
+		-- Check saved key for both modes
 		if isfile and isfile(RayfieldFolder.."/Key System".."/"..Settings.KeySettings.FileName..ConfigurationExtension) then
-			for _, MKey in ipairs(Settings.KeySettings.Key) do
-				if string.find(readfile(RayfieldFolder.."/Key System".."/"..Settings.KeySettings.FileName..ConfigurationExtension), MKey) then
+			local savedKey = readfile(RayfieldFolder.."/Key System".."/"..Settings.KeySettings.FileName..ConfigurationExtension)
+			if isAuthGuardMode then
+				-- For AuthGuard mode, validate the saved key with the function
+				local success, result = pcall(Settings.KeySettings.Key, savedKey)
+				if success and result then
 					Passthrough = true
+				end
+			else
+				-- For string mode, use original logic
+				for _, MKey in ipairs(Settings.KeySettings.Key) do
+					if string.find(savedKey, MKey) then
+						Passthrough = true
+					end
 				end
 			end
 		end
@@ -1861,18 +1878,21 @@ function RayfieldLibrary:CreateWindow(Settings)
 			KeyUI.Main.Input.InputBox.FocusLost:Connect(function()
 				if #KeyUI.Main.Input.InputBox.Text == 0 then return end
 				local KeyFound = false
-				local FoundKey = ''
-				for _, MKey in ipairs(Settings.KeySettings.Key) do
-					--if string.find(KeyMain.Input.InputBox.Text, MKey) then
-					--	KeyFound = true
-					--	FoundKey = MKey
-					--end
-
-
-					-- stricter key check
-					if KeyMain.Input.InputBox.Text == MKey then
+				local FoundKey = KeyUI.Main.Input.InputBox.Text
+				
+				if isAuthGuardMode then
+					-- Use function validation (e.g., AuthGuard)
+					local success, result = pcall(Settings.KeySettings.Key, FoundKey)
+					if success and result then
 						KeyFound = true
-						FoundKey = MKey
+					end
+				else
+					-- Use string matching validation
+					for _, MKey in ipairs(Settings.KeySettings.Key) do
+						if KeyMain.Input.InputBox.Text == MKey then
+							KeyFound = true
+							FoundKey = MKey
+						end
 					end
 				end
 				if KeyFound then 
